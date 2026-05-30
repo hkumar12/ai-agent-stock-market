@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: trump-market-oracle
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: ALERT_EMAIL
+        sync: false
+      - key: CONFIDENCE_THRESHOLD
+        value: "60"
+      - key: POLL_INTERVAL_MIN
+        value: "5"
