@@ -361,11 +361,19 @@ async function fetchSourceStatements(source) {
     messages:[{ role:"user", content: source.searchQuery }],
   }));
   const text = response.content.find(c=>c.type==="text")?.text || "";
-  if (!text) return [];
+  if (!text) { console.log("     ⚠️  No text block in response"); return []; }
+  console.log("     📝 Raw (first 300): " + text.slice(0,300));
   try {
-    const items = JSON.parse(text.replace(/```json|```/g,"").trim());
-    return Array.isArray(items) ? items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji})) : [];
-  } catch { return []; }
+    const match = text.match(/\[[\s\S]*\]/);
+    const jsonStr = match ? match[0] : text.replace(/```json|```/g,"").trim();
+    const items = JSON.parse(jsonStr);
+    if (!Array.isArray(items)) { console.log("     ⚠️  Not an array, got: " + typeof items); return []; }
+    console.log("     ✅ Parsed " + items.length + " item(s) from JSON");
+    return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+  } catch(e) {
+    console.log("     ❌ JSON parse failed: " + e.message);
+    return [];
+  }
 }
 
 // ── Main poll ──────────────────────────────────────────────────────────────
