@@ -221,7 +221,7 @@ function getClient() {
 async function fetchSourceStatements(source) {
   const client = getClient();
   const response = await client.messages.create({
-    model:      "claude-sonnet-4-20250514",
+    model:      "claude-sonnet-4-6",
     max_tokens: 1500,
     tools:      [{ type: "web_search_20250305", name: "web_search" }],
     system:     source.systemPrompt,
@@ -246,7 +246,7 @@ async function getInvestmentInsight(item, signals) {
 
   try {
     const response = await client.messages.create({
-      model:      "claude-sonnet-4-20250514",
+      model:      "claude-sonnet-4-6",
       max_tokens: 350,
       system:     `You are a razor-sharp AI sector analyst. Given a news item, give ONE specific investment action in 2-3 sentences. Name exact tickers, entry timing (pre-market / at open / wait for dip), and the catalyst. Be concrete. No disclaimers.`,
       messages:   [{ role: "user", content: `Source: ${item.sourceLabel}\nHeadline: "${item.headline}"\nQuote: "${item.quote}"\nTop signals: ${topSignals}.\nWhat is the investment action?` }],
