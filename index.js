@@ -102,32 +102,37 @@ const SIGNAL_SOURCES = [
   {
     id:"trump", label:"Trump statements", emoji:"🦅",
     searchQuery:"Donald Trump latest statements today Truth Social Twitter 2025",
-    systemPrompt:`Search for Donald Trump's LATEST statements from the last 6 hours. Return ONLY a JSON array (no markdown) of up to 4 items:
-[{"source":"Truth Social"|"X / Twitter"|"Speech"|"News","time":"e.g. 2 hours ago","headline":"8-word summary","quote":"actual quote max 150 chars","url":"source url or empty","signalType":"trump"}]`
+    systemPrompt:`Respond with ONLY a raw JSON array, starting with [ and ending with ]. No headings, no markdown, no explanation. Search for Donald Trump latest statements today and return up to 4 items:
+[{"source":"Truth Social","time":"1 hour ago","headline":"summary","quote":"quote max 150 chars","url":"","signalType":"trump"}]
+If nothing found return: []`
   },
   {
     id:"chips", label:"NVDA / chip news", emoji:"🔬",
     searchQuery:"Nvidia AMD semiconductor AI chip earnings announcement news today 2025",
-    systemPrompt:`Search for the LATEST Nvidia, AMD, or AI chip news from the last 6 hours. Return ONLY a JSON array (no markdown) of up to 3 items:
-[{"source":"Reuters"|"Bloomberg"|"CNBC"|"Earnings","time":"e.g. 1 hour ago","headline":"8-word summary","quote":"key detail max 150 chars","url":"source url or empty","signalType":"chips"}]`
+    systemPrompt:`Respond with ONLY a raw JSON array, starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest Nvidia AMD chip AI news and return up to 3 items:
+[{"source":"CNBC","time":"1 hour ago","headline":"summary","quote":"key detail max 150 chars","url":"","signalType":"chips"}]
+If nothing found return: []`
   },
   {
     id:"hyperscalers", label:"Cloud & capex news", emoji:"☁️",
     searchQuery:"Microsoft Google Amazon Meta AI data center investment capex announcement today 2025",
-    systemPrompt:`Search for the LATEST Microsoft, Google, Amazon, or Meta AI/cloud news from the last 6 hours. Return ONLY a JSON array (no markdown) of up to 3 items:
-[{"source":"Reuters"|"Bloomberg"|"CNBC"|"Earnings","time":"e.g. 3 hours ago","headline":"8-word summary","quote":"key detail max 150 chars","url":"source url or empty","signalType":"cloud"}]`
+    systemPrompt:`Respond with ONLY a raw JSON array, starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest Microsoft Google Amazon Meta AI cloud news and return up to 3 items:
+[{"source":"Bloomberg","time":"2 hours ago","headline":"summary","quote":"key detail max 150 chars","url":"","signalType":"cloud"}]
+If nothing found return: []`
   },
   {
     id:"power", label:"Power & energy news", emoji:"⚡",
     searchQuery:"data center power electricity nuclear energy AI demand news today 2025",
-    systemPrompt:`Search for LATEST power/energy demand news driven by AI from the last 6 hours. Return ONLY a JSON array (no markdown) of up to 3 items:
-[{"source":"Reuters"|"Bloomberg"|"CNBC","time":"e.g. 4 hours ago","headline":"8-word summary","quote":"key detail max 150 chars","url":"source url or empty","signalType":"power"}]`
+    systemPrompt:`You must respond with ONLY a raw JSON array. No headings, no markdown, no explanation, no preamble. Start your response with [ and end with ]. Search for latest power/energy/AI demand news and return this exact structure:
+[{"source":"CNBC","time":"2 hours ago","headline":"summary here","quote":"key quote here","url":"","signalType":"power"}]
+If nothing found return: []`
   },
   {
     id:"policy", label:"AI policy & regulation", emoji:"⚖️",
     searchQuery:"AI regulation policy export controls chips law news today 2025",
-    systemPrompt:`Search for LATEST AI regulation or chip export control news from the last 6 hours. Return ONLY a JSON array (no markdown) of up to 3 items:
-[{"source":"Reuters"|"Bloomberg"|"WSJ","time":"e.g. 5 hours ago","headline":"8-word summary","quote":"key detail max 150 chars","url":"source url or empty","signalType":"policy"}]`
+    systemPrompt:`Respond with ONLY a raw JSON array, starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest AI regulation chip export control policy news and return up to 3 items:
+[{"source":"WSJ","time":"3 hours ago","headline":"summary","quote":"key detail max 150 chars","url":"","signalType":"policy"}]
+If nothing found return: []`
   },
 ];
 
@@ -362,16 +367,46 @@ async function fetchSourceStatements(source) {
   }));
   const text = response.content.find(c=>c.type==="text")?.text || "";
   if (!text) { console.log("     ⚠️  No text block in response"); return []; }
-  console.log("     📝 Raw (first 300): " + text.slice(0,300));
+  console.log("     📝 Raw (first 200): " + text.slice(0,200));
   try {
-    const match = text.match(/\[[\s\S]*\]/);
-    const jsonStr = match ? match[0] : text.replace(/```json|```/g,"").trim();
-    const items = JSON.parse(jsonStr);
-    if (!Array.isArray(items)) { console.log("     ⚠️  Not an array, got: " + typeof items); return []; }
-    console.log("     ✅ Parsed " + items.length + " item(s) from JSON");
-    return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+    // Strategy 1: find a JSON array anywhere in the response
+    const match = text.match(/\[[\s\S]*?\]/);
+    if (match) {
+      const items = JSON.parse(match[0]);
+      if (Array.isArray(items) && items.length > 0) {
+        console.log("     ✅ Extracted " + items.length + " item(s) via array match");
+        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+      }
+    }
+    // Strategy 2: strip markdown fences and try full parse
+    const cleaned = text.replace(/```json|```/g,"").replace(/^[^\[]*/, "").replace(/[^\]]*$/, "").trim();
+    if (cleaned.startsWith("[")) {
+      const items = JSON.parse(cleaned);
+      if (Array.isArray(items)) {
+        console.log("     ✅ Extracted " + items.length + " item(s) via cleaned parse");
+        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+      }
+    }
+    // Strategy 3: ask Claude to reformat as JSON (1 retry)
+    console.log("     🔄 Asking Claude to reformat as JSON...");
+    const retry = await getClient().messages.create({
+      model:"claude-haiku-4-5", max_tokens:800,
+      system:"Extract the news items from the text below and return ONLY a raw JSON array starting with [ and ending with ]. No other text. Each item must have: source, time, headline, quote, url, signalType fields.",
+      messages:[{ role:"user", content: text.slice(0,2000) }],
+    });
+    const retryText = retry.content.find(c=>c.type==="text")?.text || "";
+    const retryMatch = retryText.match(/\[[\s\S]*?\]/);
+    if (retryMatch) {
+      const items = JSON.parse(retryMatch[0]);
+      if (Array.isArray(items)) {
+        console.log("     ✅ Extracted " + items.length + " item(s) via Claude reformat");
+        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+      }
+    }
+    console.log("     ⚠️  All parse strategies failed, returning []");
+    return [];
   } catch(e) {
-    console.log("     ❌ JSON parse failed: " + e.message);
+    console.log("     ❌ Parse error: " + e.message);
     return [];
   }
 }
