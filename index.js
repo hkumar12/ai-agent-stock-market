@@ -14,11 +14,17 @@ const CONFIG = {
   ALERT_EMAIL:          process.env.ALERT_EMAIL || process.env.GMAIL_USER,
   CONFIDENCE_THRESHOLD: Number(process.env.CONFIDENCE_THRESHOLD) || 60,
   POLL_INTERVAL_MIN:    Number(process.env.POLL_INTERVAL_MIN)    || 5,
+  TELEGRAM_BOT_TOKEN:   process.env.TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_IDS:    (process.env.TELEGRAM_CHAT_IDS || "").split(",").map(s => s.trim()).filter(Boolean),
 };
 
 function validateConfig() {
-  const missing = ["ANTHROPIC_API_KEY","GMAIL_USER","GMAIL_APP_PASSWORD"].filter(k => !CONFIG[k]);
-  if (missing.length) { console.error("❌ Missing env vars:", missing.join(", ")); process.exit(1); }
+  const missing = ["ANTHROPIC_API_KEY"].filter(k => !CONFIG[k]);
+  if (missing.length) { console.error("\u274c Missing env vars:", missing.join(", ")); process.exit(1); }
+  if (!CONFIG.TELEGRAM_BOT_TOKEN && !CONFIG.GMAIL_USER) {
+    console.error("\u274c Need at least one alert channel: TELEGRAM_BOT_TOKEN or GMAIL_USER");
+    process.exit(1);
+  }
 }
 
 // ── AI Ecosystem layers ───────────────────────────────────────────────────
@@ -273,6 +279,72 @@ async function getInvestmentInsight(item, signals) {
   } catch { return ""; }
 }
 
+// ── Telegram alert sender ─────────────────────────────────────────────────
+async function sendTelegramAlert(item, analysis) {
+  if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_CHAT_IDS.length) return;
+
+  const sentimentEmoji = { bullish: "📈", bearish: "📉", neutral: "➡️" }[analysis.sentiment] || "➡️";
+
+  const topSignals = Object.entries(analysis.signals)
+    .sort((a, b) => Math.abs(b[1].score) - Math.abs(a[1].score))
+    .slice(0, 5)
+    .map(([s, d]) => `${LAYERS[s]?.emoji} *${LAYERS[s]?.label}* — ${d.direction} \`${LAYERS[s]?.tickers.slice(0,3).join(" · ")}\``)
+    .join("\n");
+
+  const msg = [
+    `${item.sourceEmoji} *AI SIGNAL — ${analysis.sentiment.toUpperCase()}* ${sentimentEmoji}`,
+    `📊 Confidence: *${analysis.confidence}%* | Source: ${item.source} | ${item.time}`,
+    ``,
+    `💬 _"${item.quote?.slice(0,200)}"_`,
+    ``,
+    `🎯 *Sector Signals:*`,
+    topSignals || "_No strong signals_",
+    ``,
+    analysis.insight ? `🤖 *AI Action:*\n${analysis.insight}` : "",
+    item.url ? `\n🔗 [Source](${item.url})` : "",
+    ``,
+    `⚠️ _Not financial advice. Educational only._`,
+  ].filter(l => l !== undefined).join("\n");
+
+  for (const chatId of CONFIG.TELEGRAM_CHAT_IDS) {
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id:    chatId,
+            text:       msg,
+            parse_mode: "Markdown",
+            disable_web_page_preview: false,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (data.ok) {
+        console.log(`📲 Telegram → chat ${chatId} ✅`);
+      } else {
+        console.error(`📲 Telegram → chat ${chatId} ❌`, data.description);
+      }
+    } catch (err) {
+      console.error(`📲 Telegram send failed for ${chatId}:`, err.message);
+    }
+  }
+}
+
+// ── Send all alerts (Gmail + Telegram) ────────────────────────────────────
+async function sendAllAlerts(item, analysis) {
+  const promises = [];
+  if (CONFIG.GMAIL_USER && CONFIG.GMAIL_APP_PASSWORD) {
+    promises.push(sendGmailAlert(item, analysis).catch(e => console.error("❌ Gmail failed:", e.message)));
+  }
+  if (CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_IDS.length) {
+    promises.push(sendTelegramAlert(item, analysis).catch(e => console.error("❌ Telegram failed:", e.message)));
+  }
+  await Promise.all(promises);
+}
+
 async function sendGmailAlert(item, analysis) {
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -371,11 +443,7 @@ async function poll() {
 
       analysis.insight = await getInvestmentInsight(item, analysis.signals);
 
-      try {
-        await sendGmailAlert(item, analysis);
-      } catch (err) {
-        console.error(`  ❌ Gmail send failed:`, err.message);
-      }
+      await sendAllAlerts(item, analysis);
 
       await sleep(5000); // gap between insight calls
     }
@@ -401,7 +469,8 @@ async function main() {
   validateConfig();
   console.log("🤖 AI Ecosystem Signal Engine");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`📧 Alerts → ${CONFIG.ALERT_EMAIL}`);
+  console.log(`📧 Gmail  → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
+  console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length + " recipient(s)" : "disabled"}`);
   console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}%`);
   console.log(`⏱  Poll every: ${CONFIG.POLL_INTERVAL_MIN} min`);
   console.log(`📡 Sources: ${SIGNAL_SOURCES.map(s=>s.label).join(", ")}`);
