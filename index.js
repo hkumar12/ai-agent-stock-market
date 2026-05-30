@@ -218,15 +218,33 @@ function getClient() {
   return anthropic;
 }
 
+// Retry wrapper with exponential backoff for 429s
+async function withRetry(fn, retries = 3, delayMs = 15000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const is429 = err.message?.includes("429") || err.message?.includes("rate_limit");
+      if (is429 && i < retries - 1) {
+        const wait = delayMs * (i + 1);
+        console.log(`  ⏳ Rate limited — waiting ${wait/1000}s before retry ${i+1}/${retries-1}...`);
+        await sleep(wait);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 async function fetchSourceStatements(source) {
   const client = getClient();
-  const response = await client.messages.create({
+  const response = await withRetry(() => client.messages.create({
     model:      "claude-sonnet-4-6",
-    max_tokens: 1500,
+    max_tokens: 1000,
     tools:      [{ type: "web_search_20250305", name: "web_search" }],
     system:     source.systemPrompt,
     messages:   [{ role: "user", content: source.searchQuery }],
-  });
+  }));
   const textBlock = response.content.find(c => c.type === "text");
   if (!textBlock?.text) return [];
   try {
@@ -240,14 +258,14 @@ async function getInvestmentInsight(item, signals) {
   const client     = getClient();
   const topSignals = Object.entries(signals)
     .sort((a, b) => Math.abs(b[1].score) - Math.abs(a[1].score))
-    .slice(0, 4)
+    .slice(0, 3)
     .map(([s, d]) => `${LAYERS[s]?.label} ${d.direction}`)
     .join(", ") || "none";
 
   try {
-    const response = await client.messages.create({
-      model:      "claude-sonnet-4-6",
-      max_tokens: 350,
+    const response = await withRetry(() => client.messages.create({
+      model:      "claude-haiku-4-5",
+      max_tokens: 250,
       system:     `You are a razor-sharp AI sector analyst. Given a news item, give ONE specific investment action in 2-3 sentences. Name exact tickers, entry timing (pre-market / at open / wait for dip), and the catalyst. Be concrete. No disclaimers.`,
       messages:   [{ role: "user", content: `Source: ${item.sourceLabel}\nHeadline: "${item.headline}"\nQuote: "${item.quote}"\nTop signals: ${topSignals}.\nWhat is the investment action?` }],
     });
@@ -359,10 +377,10 @@ async function poll() {
         console.error(`  ❌ Gmail send failed:`, err.message);
       }
 
-      await sleep(1500);
+      await sleep(5000); // gap between insight calls
     }
 
-    await sleep(3000); // polite gap between sources
+    await sleep(25000); // 25s gap between sources to stay under token/min limit
   }
 
   lastPollTime = new Date().toISOString();
