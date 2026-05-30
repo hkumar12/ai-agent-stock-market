@@ -268,7 +268,7 @@ async function getInvestmentInsight(item, signals) {
       max_tokens: 250,
       system:     `You are a razor-sharp AI sector analyst. Given a news item, give ONE specific investment action in 2-3 sentences. Name exact tickers, entry timing (pre-market / at open / wait for dip), and the catalyst. Be concrete. No disclaimers.`,
       messages:   [{ role: "user", content: `Source: ${item.sourceLabel}\nHeadline: "${item.headline}"\nQuote: "${item.quote}"\nTop signals: ${topSignals}.\nWhat is the investment action?` }],
-    });
+    }));
     return response.content.find(c => c.type === "text")?.text || "";
   } catch { return ""; }
 }
