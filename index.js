@@ -155,21 +155,139 @@ const SIGNAL_KW = {
   },
 };
 
-function scoreStatement(text) {
+// ── Negation detector ─────────────────────────────────────────────────────
+// Returns true if a keyword appears right after a negation word in the text
+function isNegated(text, keyword) {
+  const negations = ["not","no","never","without","unlikely","fails","failed","missed","below","despite","against","halt","ban","blocked","rejected","cancelled"];
+  const idx = text.indexOf(keyword);
+  if (idx === -1) return false;
+  const before = text.slice(Math.max(0, idx - 40), idx).toLowerCase();
+  return negations.some(n => before.includes(n));
+}
+
+// ── Keyword density scorer ─────────────────────────────────────────────────
+// More matches = exponentially stronger signal, negations cancel hits
+function densityScore(text, keywords) {
+  const lower = text.toLowerCase();
+  let hits = 0;
+  for (const kw of keywords) {
+    if (lower.includes(kw) && !isNegated(lower, kw)) hits++;
+  }
+  // Exponential: 1 hit=1, 2 hits=3, 3 hits=6, 4 hits=10 (triangular numbers)
+  return hits * (hits + 1) / 2;
+}
+
+// ── Source credibility weight ──────────────────────────────────────────────
+function sourceWeight(signalType) {
+  const weights = {
+    earnings: 1.4,   // official earnings = highest credibility
+    macro:    1.3,   // Fed/CPI = market-moving by definition
+    options:  1.2,   // institutional money talking
+    chips:    1.1,   // direct sector news
+    cloud:    1.1,
+    power:    1.0,
+    policy:   1.0,
+    trump:    0.9,   // political rhetoric — real but noisier
+    reddit:   0.7,   // sentiment signal, not fundamental
+  };
+  return weights[signalType] || 1.0;
+}
+
+// ── Cross-sector confirmation bonus ───────────────────────────────────────
+// When multiple DIFFERENT sectors all point the same direction, confidence rises sharply
+function crossSectorBonus(sectorCount) {
+  if (sectorCount >= 4) return 25;
+  if (sectorCount === 3) return 15;
+  if (sectorCount === 2) return 7;
+  return 0;
+}
+
+// ── Magnitude detector ────────────────────────────────────────────────────
+// Looks for numbers that imply large financial scale
+function magnitudeBonus(text) {
+  const lower = text.toLowerCase();
+  let bonus = 0;
+  // Dollar amounts in billions/trillions
+  if (/\$[\d.]+\s*(billion|trillion|b\b|t\b)/i.test(text)) bonus += 8;
+  // % beats/misses
+  const pctMatch = text.match(/(\d+)%/g);
+  if (pctMatch) {
+    const maxPct = Math.max(...pctMatch.map(p => parseInt(p)));
+    if (maxPct >= 20) bonus += 10;
+    else if (maxPct >= 10) bonus += 6;
+    else if (maxPct >= 5)  bonus += 3;
+  }
+  // Explicit magnitude words with context
+  const magnitudeWords = {
+    "record":12, "historic":10, "all-time":12, "largest ever":14,
+    "beats":8, "misses":8, "raised guidance":12, "lowered guidance":12,
+    "surprise":7, "unexpected":7, "shock":8, "emergency":6,
+    "billion":5, "trillion":8, "massive":4, "unprecedented":8,
+  };
+  for (const [word, pts] of Object.entries(magnitudeWords)) {
+    if (lower.includes(word) && !isNegated(lower, word)) bonus += pts;
+  }
+  return Math.min(bonus, 30); // cap magnitude bonus at 30pts
+}
+
+// ── Main scoring function ──────────────────────────────────────────────────
+function scoreStatement(text, signalType = "news") {
   const lower = text.toLowerCase();
   const signals = {};
+
+  // Score each sector with density (not flat +2 per keyword)
   Object.entries(LAYERS).forEach(([layer]) => {
-    let score = 0;
-    (SIGNAL_KW.bullish[layer] || []).forEach(kw => { if (lower.includes(kw)) score += 2; });
-    (SIGNAL_KW.bearish[layer]  || []).forEach(kw => { if (lower.includes(kw)) score -= 2; });
-    if (score !== 0) signals[layer] = { direction: score > 0 ? "BUY" : "SELL", strength: Math.min(Math.abs(score)*20,100), score };
+    const bullScore = densityScore(text, SIGNAL_KW.bullish[layer] || []);
+    const bearScore = densityScore(text, SIGNAL_KW.bearish[layer] || []);
+    const netScore  = bullScore - bearScore;
+    if (netScore !== 0) {
+      // Strength = how many keywords fired relative to total available (capped 100)
+      const totalKw  = (SIGNAL_KW.bullish[layer]||[]).length + (SIGNAL_KW.bearish[layer]||[]).length;
+      const strength = Math.min(Math.round((Math.abs(netScore) / Math.max(totalKw * 0.3, 1)) * 100), 100);
+      signals[layer] = { direction: netScore > 0 ? "BUY" : "SELL", strength, score: netScore };
+    }
   });
-  const bull    = Object.values(signals).filter(s => s.direction==="BUY").length;
-  const bear    = Object.values(signals).filter(s => s.direction==="SELL").length;
-  const urgency = ["record","historic","beats","misses","raises","lowers","billions","trillion","massive","emergency","surprise","unexpected","shock"]
-    .filter(w => lower.includes(w)).length;
-  const confidence = Math.min((Math.max(bull,bear)*16) + urgency*5, 95);
-  return { signals, sentiment: bull>bear?"bullish":bear>bull?"bearish":"neutral", confidence, bull, bear };
+
+  const bull = Object.values(signals).filter(s => s.direction==="BUY").length;
+  const bear = Object.values(signals).filter(s => s.direction==="SELL").length;
+  const dominant = Math.max(bull, bear);
+  const sentiment = bull > bear ? "bullish" : bear > bull ? "bearish" : "neutral";
+
+  // ── Multi-factor confidence calculation ──────────────────────────────────
+  //
+  // Factor 1: Keyword density (0-40pts)
+  //   Based on strongest single sector score, scaled to 40
+  const topSectorScore = Object.values(signals).reduce((max, s) => Math.max(max, Math.abs(s.score)), 0);
+  const densityPts = Math.min(topSectorScore * 6, 40);
+
+  // Factor 2: Cross-sector confirmation (0-25pts)
+  //   Multiple sectors aligning = much stronger signal
+  const crossPts = crossSectorBonus(dominant);
+
+  // Factor 3: Magnitude of the news (0-30pts)
+  //   Dollar amounts, % beats, magnitude words
+  const magnitudePts = magnitudeBonus(text);
+
+  // Factor 4: Source credibility weight (multiplier 0.7x-1.4x)
+  const weight = sourceWeight(signalType);
+
+  // Factor 5: Penalty for mixed signals (bull AND bear sectors firing)
+  const mixPenalty = (bull > 0 && bear > 0) ? Math.min(bull, bear) * 5 : 0;
+
+  const rawScore   = (densityPts + crossPts + magnitudePts - mixPenalty) * weight;
+  const confidence = Math.min(Math.round(rawScore), 95);
+
+  // Debug breakdown
+  const breakdown = {
+    densityPts: Math.round(densityPts),
+    crossPts,
+    magnitudePts,
+    mixPenalty,
+    sourceWeight: weight,
+    rawBeforeWeight: Math.round(densityPts + crossPts + magnitudePts - mixPenalty),
+  };
+
+  return { signals, sentiment, confidence, bull, bear, breakdown };
 }
 
 // ── Supply chain ripple finder ─────────────────────────────────────────────
@@ -644,8 +762,11 @@ async function poll() {
       seenQuotes.add(key);
       if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
 
-      const scored = scoreStatement(item.quote||item.headline||"");
-      console.log(`     "${key.slice(0,45)}…" → ${scored.sentiment} ${scored.confidence}%`);
+      const scored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
+      const b = scored.breakdown;
+      console.log(`     "${key.slice(0,45)}…"`);
+      console.log(`     → ${scored.sentiment.toUpperCase()} | Confidence: ${scored.confidence}%`);
+      console.log(`     → Breakdown: density=${b.densityPts}pts cross-sector=${b.crossPts}pts magnitude=${b.magnitudePts}pts mix-penalty=${b.mixPenalty}pts × weight=${b.sourceWeight} = raw ${b.rawBeforeWeight}pts`);
 
       if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD || !Object.keys(scored.signals).length) {
         console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
