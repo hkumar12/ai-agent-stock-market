@@ -285,9 +285,14 @@ async function fetchSourceStatements(source) {
   const response = await withRetry(() => getClient().messages.create({
     model:"claude-sonnet-4-6", max_tokens:1000,
     tools:[{ type:"web_search_20250305", name:"web_search" }],
-    system: source.systemPrompt,
+    system:[{
+      type:"text",
+      text: source.systemPrompt,
+      cache_control:{ type:"ephemeral" },  // cache system prompt — 90% cheaper on repeat calls
+    }],
     messages:[{ role:"user", content: source.searchQuery }],
   }));
+  trackCacheUsage(response);
   const text = response.content.find(c=>c.type==="text")?.text || "";
   if (!text) { console.log("     ⚠️  No text block"); return []; }
   console.log("     📝 Raw (first 200): " + text.slice(0,200));
@@ -319,9 +324,10 @@ async function fetchSourceStatements(source) {
     console.log("     🔄 Asking Haiku to reformat...");
     const retry = await getClient().messages.create({
       model:"claude-haiku-4-5", max_tokens:800,
-      system:"Extract news items from the text and return ONLY a raw JSON array starting with [ and ending with ]. Each item needs: source, time, headline, quote, url, signalType. No other text.",
+      system:[{ type:"text", text:"Extract news items from the text and return ONLY a raw JSON array starting with [ and ending with ]. Each item needs: source, time, headline, quote, url, signalType. No other text.", cache_control:{ type:"ephemeral" } }],
       messages:[{ role:"user", content: text.slice(0,2000) }],
     });
+    trackCacheUsage(retry);
     const retryText = retry.content.find(c=>c.type==="text")?.text || "";
     const match3 = retryText.match(/\[[\s\S]*\]/);
     if (match3) {
@@ -340,19 +346,35 @@ async function fetchSourceStatements(source) {
 }
 
 // ── Market context ─────────────────────────────────────────────────────────
+// Cache market context for 10 minutes — it barely changes between polls
+let marketCtxCache = null;
+let marketCtxTime  = 0;
+
 async function fetchMarketContext(topSectors) {
+  // Return cached value if fetched within last 10 minutes
+  if (marketCtxCache && (Date.now() - marketCtxTime) < 10 * 60 * 1000) {
+    console.log("     💾 Market context from local cache (10min TTL)");
+    return marketCtxCache;
+  }
   const etfs = [...new Set(topSectors.map(s => LAYERS[s]?.etf).filter(Boolean))].slice(0,3);
   try {
     const response = await withRetry(() => getClient().messages.create({
       model:"claude-haiku-4-5", max_tokens:400,
       tools:[{ type:"web_search_20250305", name:"web_search" }],
-      system:`Search for current market data and return ONLY a JSON object (no markdown):
+      system:[{
+        type:"text",
+        text:`Search for current market data and return ONLY a JSON object (no markdown):
 {"spy":"% change today","vix":"current value","market_mood":"risk-on|risk-off|neutral","sector_etfs":{"XLK":"+1.2%"},"fed_note":"any Fed/rate news this week or empty","upcoming_events":"earnings or macro events in next 48hrs or empty"}`,
+        cache_control:{ type:"ephemeral" },
+      }],
       messages:[{ role:"user", content:`Current price SPY VIX ${etfs.join(" ")} market mood today 2025` }],
     }));
+    trackCacheUsage(response);
     const text = response.content.find(c=>c.type==="text")?.text || "";
     const match = text.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    const result = match ? JSON.parse(match[0]) : null;
+    if (result) { marketCtxCache = result; marketCtxTime = Date.now(); }
+    return result;
   } catch { return null; }
 }
 
@@ -364,10 +386,15 @@ async function fetchPeerComparison(topSectors) {
     const response = await withRetry(() => getClient().messages.create({
       model:"claude-haiku-4-5", max_tokens:600,
       tools:[{ type:"web_search_20250305", name:"web_search" }],
-      system:`Search for current stock data and return ONLY a JSON array (no markdown):
+      system:[{
+        type:"text",
+        text:`Search for current stock data and return ONLY a JSON array (no markdown):
 [{"ticker":"NVDA","price":"$X","change":"+2.3%","pe":"35","analyst":"Buy","momentum":"strong|weak|neutral","note":"1 sentence insight"}]`,
+        cache_control:{ type:"ephemeral" },
+      }],
       messages:[{ role:"user", content:`Stock price PE analyst rating momentum for ${peers.join(", ")} today 2025` }],
     }));
+    trackCacheUsage(response);
     const text = response.content.find(c=>c.type==="text")?.text || "";
     const match = text.match(/\[[\s\S]*\]/);
     return match ? JSON.parse(match[0]) : null;
@@ -451,9 +478,14 @@ Be aggressive, specific, name prices and % targets. Assume the reader will act o
   try {
     const response = await withRetry(() => getClient().messages.create({
       model:"claude-sonnet-4-6", max_tokens:800,
-      system:`You are an aggressive growth investor analyst. Profile: high risk tolerance, 1-3 month horizon, looking for asymmetric upside. Give specific, actionable, data-driven analysis. Name exact tickers, prices, and % targets. Always suggest a supply chain / dependent company play as a less-obvious high-upside idea.`,
+      system:[{
+        type:"text",
+        text:"You are an aggressive growth investor analyst. Profile: high risk tolerance, 1-3 month horizon, looking for asymmetric upside. Give specific, actionable, data-driven analysis. Name exact tickers, prices, and % targets. Always suggest a supply chain / dependent company play as a less-obvious high-upside idea.",
+        cache_control:{ type:"ephemeral" },  // cache analyst persona — same every call
+      }],
       messages:[{ role:"user", content: prompt }],
     }));
+    trackCacheUsage(response);
     return response.content.find(c=>c.type==="text")?.text || "";
   } catch { return ""; }
 }
@@ -583,6 +615,18 @@ async function sendAllAlerts(item, scored, analysis, ripples) {
 const seenQuotes = new Set();
 let lastPollTime = null;
 let nextPollTime = null;
+const cacheStats = { hits: 0, writes: 0, tokensSaved: 0 };
+
+function trackCacheUsage(response) {
+  if (!response?.usage) return;
+  const hit   = response.usage.cache_read_input_tokens   || 0;
+  const write = response.usage.cache_creation_input_tokens || 0;
+  if (hit)   { cacheStats.hits++;   cacheStats.tokensSaved += hit; }
+  if (write) { cacheStats.writes++; }
+  if (hit || write) {
+    console.log(`     💾 Cache: ${hit ? "HIT "+hit+" tokens saved (90% off)" : ""} ${write ? "WRITE "+write+" tokens" : ""}`);
+  }
+}
 
 async function poll() {
   console.log(`\n[${new Date().toLocaleTimeString()}] 🔄 Polling ${SIGNAL_SOURCES.length} sources...`);
@@ -614,12 +658,13 @@ async function poll() {
       const ripples = findSupplyChainRipple(scored.signals);
       if (ripples.length) console.log(`     🔗 Ripple: ${ripples.map(r=>r.ticker).join(", ")}`);
 
-      // Fetch context in parallel
-      console.log(`     🔍 Fetching article, market context, peers...`);
+      // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
+      const highConfidence = scored.confidence >= 75;
+      console.log(`     🔍 Fetching context... ${highConfidence ? "(full)" : "(market only — confidence <75%)"}`);
       const [articleText, marketCtx, peerData] = await Promise.allSettled([
         fetchArticleText(item.url),
         fetchMarketContext(topSectors),
-        fetchPeerComparison(topSectors),
+        highConfidence ? fetchPeerComparison(topSectors) : Promise.resolve(null),
       ]).then(results => results.map(r => r.status==="fulfilled" ? r.value : null));
 
       console.log(`     🤖 Running deep analysis...`);
@@ -635,6 +680,7 @@ async function poll() {
   }
 
   lastPollTime = new Date().toISOString();
+  console.log(`  💾 Session cache stats: ${cacheStats.hits} hits | ${cacheStats.tokensSaved.toLocaleString()} tokens saved | ${cacheStats.writes} writes`);
 }
 
 function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
@@ -644,7 +690,7 @@ function startHealthServer() {
   const port = process.env.PORT || 3000;
   http.createServer((req,res) => {
     res.writeHead(200,{"Content-Type":"application/json"});
-    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", profile:"aggressive|1-3mo", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, layers:Object.keys(LAYERS).length, lastPoll:lastPollTime, nextPoll:nextPollTime }));
+    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", profile:"aggressive|1-3mo", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, layers:Object.keys(LAYERS).length, lastPoll:lastPollTime, nextPoll:nextPollTime, cacheHits:cacheStats.hits, tokensSaved:cacheStats.tokensSaved, cacheWrites:cacheStats.writes }));
   }).listen(port, ()=>console.log(`🌐 Health check on port ${port}`));
 }
 
