@@ -622,6 +622,12 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
   const rippleText = ripples.length
     ? `\n🔗 *Supply Chain Plays:* ${ripples.slice(0,3).map(r=>`${r.ticker}`).join(" · ")}`
     : "";
+  const aiReasonText = scored.aiScreen?.reasoning
+    ? `\n🧠 _${scored.aiScreen.reasoning}_`
+    : "";
+  const primaryTickersText = (scored.aiScreen?.primary_tickers||[]).length
+    ? `\n🎯 *Primary tickers:* ${scored.aiScreen.primary_tickers.join(" · ")}`
+    : "";
 
   const lines = analysis.split("\n").filter(l=>l.trim()).slice(0,14);
 
@@ -631,6 +637,8 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
     `🕐 ${item.time}${item.ticker ? ` | $${item.ticker}` : ""}`,
     ``,
     `💬 _"${(item.quote||"").slice(0,180)}"_`,
+    aiReasonText,
+    primaryTickersText,
     rippleText,
     ``,
     `📋 *Analysis:*`,
@@ -729,6 +737,126 @@ async function sendAllAlerts(item, scored, analysis, ripples) {
   ]);
 }
 
+// ── AI Pre-screener ───────────────────────────────────────────────────────
+// Replaces keyword gating. Haiku reads the statement and returns a structured
+// assessment — catches things keywords never could (Dell example, negations,
+// unknown companies, implicit sector plays, presidential endorsements etc.)
+async function aiPreScreen(item) {
+  const fullText = [item.headline, item.quote].filter(Boolean).join(" — ");
+  try {
+    const response = await withRetry(() => getClient().messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 400,
+      system: [{
+        type: "text",
+        cache_control: { type: "ephemeral" },
+        text: `You are a financial signal pre-screener for an aggressive growth investor (1-3 month horizon).
+
+Analyse the news item and return ONLY a raw JSON object (no markdown, no preamble):
+{
+  "is_market_moving": true|false,
+  "confidence": 0-100,
+  "sentiment": "bullish"|"bearish"|"neutral",
+  "reasoning": "1 sentence why",
+  "primary_tickers": ["TICK1","TICK2"],
+  "ripple_tickers": ["TICK3","TICK4"],
+  "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","macro"],
+  "signal_type_boost": "earnings"|"presidential_endorsement"|"policy"|"options_flow"|"guidance"|"contract"|"regulation"|"none",
+  "negated": true|false
+}
+
+Confidence scoring guide:
+- 90-100: Presidential endorsement of specific stock, earnings beat >15%, Fed pivot announcement
+- 75-89:  Earnings beat 5-15%, major contract win, guidance raise, large options sweep
+- 60-74:  Sector news with clear winner, policy change affecting specific companies
+- 40-59:  General industry news, weak signals, ambiguous impact
+- 0-39:   Not market moving, irrelevant, or negated signal
+
+CRITICAL rules:
+- "go out and buy Dell" from a president = 92+ confidence, presidential_endorsement, tickers [DELL,INTC,MSFT]
+- "chip demand not as strong" = negated:true, bearish, lower confidence
+- Unknown company names: look them up mentally and include their ticker
+- Always include supply chain ripple tickers, not just the obvious primary one`
+      }],
+      messages: [{ role: "user", content: `Source: ${item.sourceLabel} (${item.signalType||"news"})\nText: ${fullText.slice(0,400)}` }],
+    }));
+    trackCacheUsage(response);
+    const text = response.content.find(c=>c.type==="text")?.text || "";
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch(e) {
+    console.log(`     ⚠️  AI pre-screen failed: ${e.message} — falling back to keyword score`);
+    return null;
+  }
+}
+
+// Merge AI pre-screen result with keyword scored signals
+// AI score is authoritative for confidence/sentiment/tickers
+// Keyword signals fill in sector details
+function mergeScores(keywordScored, aiScreen) {
+  if (!aiScreen) return keywordScored; // fallback to keyword if AI failed
+
+  // Build signals from AI-identified sectors + keyword details
+  const mergedSignals = { ...keywordScored.signals };
+
+  // Add any sectors AI found that keywords missed
+  (aiScreen.sectors || []).forEach(sector => {
+    if (!mergedSignals[sector]) {
+      mergedSignals[sector] = {
+        direction: aiScreen.sentiment === "bullish" ? "BUY" : "SELL",
+        strength: Math.round(aiScreen.confidence * 0.8),
+        score: aiScreen.sentiment === "bullish" ? 3 : -3,
+        aiDetected: true,   // flag: AI found this, keywords didn't
+      };
+    }
+  });
+
+  // If negated, flip or zero out keyword signals
+  if (aiScreen.negated) {
+    Object.keys(mergedSignals).forEach(s => {
+      mergedSignals[s].direction = mergedSignals[s].direction === "BUY" ? "SELL" : "BUY";
+      mergedSignals[s].negated = true;
+    });
+  }
+
+  // Add AI-found tickers to the ripple map dynamically
+  const dynamicRipples = (aiScreen.ripple_tickers || [])
+    .filter(t => t && t.length <= 5)
+    .map(t => ({ ticker: t, reason: "AI-identified supply chain play", relationship: "related to", parent: (aiScreen.primary_tickers||[])[0] || "signal" }));
+
+  // Signal type boost to confidence
+  const boosts = {
+    presidential_endorsement: 15,
+    earnings: 10,
+    guidance: 12,
+    contract: 8,
+    options_flow: 8,
+    policy: 6,
+    regulation: 6,
+    none: 0,
+  };
+  const boost = boosts[aiScreen.signal_type_boost] || 0;
+  const finalConfidence = Math.min(aiScreen.confidence + boost, 95);
+
+  return {
+    signals: mergedSignals,
+    sentiment: aiScreen.sentiment,
+    confidence: finalConfidence,
+    bull: Object.values(mergedSignals).filter(s=>s.direction==="BUY").length,
+    bear: Object.values(mergedSignals).filter(s=>s.direction==="SELL").length,
+    aiScreen,           // attach full AI assessment for logging + alerts
+    dynamicRipples,     // extra ripple tickers AI found
+    breakdown: {
+      ...keywordScored.breakdown,
+      aiConfidence: aiScreen.confidence,
+      signalTypeBoost: boost,
+      negated: aiScreen.negated,
+      aiReasoning: aiScreen.reasoning,
+    },
+  };
+}
+
 // ── Main poll ──────────────────────────────────────────────────────────────
 const seenQuotes = new Set();
 let lastPollTime = null;
@@ -762,22 +890,51 @@ async function poll() {
       seenQuotes.add(key);
       if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
 
-      const scored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
-      const b = scored.breakdown;
+      // ── Step 1: fast keyword pre-score (cheap, no API call) ──────────────
+      const keywordScored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
+      const b = keywordScored.breakdown;
       console.log(`     "${key.slice(0,45)}…"`);
-      console.log(`     → ${scored.sentiment.toUpperCase()} | Confidence: ${scored.confidence}%`);
-      console.log(`     → Breakdown: density=${b.densityPts}pts cross-sector=${b.crossPts}pts magnitude=${b.magnitudePts}pts mix-penalty=${b.mixPenalty}pts × weight=${b.sourceWeight} = raw ${b.rawBeforeWeight}pts`);
+      console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
 
-      if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD || !Object.keys(scored.signals).length) {
+      // ── Step 2: AI pre-screen (Haiku, ~$0.001 per item) ─────────────────
+      // Always runs — catches what keywords miss (Dell, negations, unknown cos)
+      console.log(`     🧠 AI pre-screening...`);
+      const aiScreen = await aiPreScreen(item);
+      const scored   = mergeScores(keywordScored, aiScreen);
+
+      if (aiScreen) {
+        console.log(`     → AI score: ${aiScreen.sentiment.toUpperCase()} ${aiScreen.confidence}% | ${aiScreen.reasoning}`);
+        console.log(`     → Signal type: ${aiScreen.signal_type_boost} | Negated: ${aiScreen.negated} | Tickers: ${(aiScreen.primary_tickers||[]).join(", ")}`);
+        console.log(`     → FINAL confidence: ${scored.confidence}% (AI ${aiScreen.confidence}% + boost ${scored.breakdown.signalTypeBoost}pts)`);
+      }
+
+      if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
         console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
+      }
+      if (aiScreen?.is_market_moving === false) {
+        console.log(`     ↩  AI says not market-moving, skipping`); continue;
+      }
+      if (aiScreen?.negated) {
+        console.log(`     ↩  AI detected negation — signal is ${scored.sentiment}`);
+        // Still continue if bearish signal above threshold
+        if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) continue;
       }
 
       const topSectors = Object.entries(scored.signals)
         .sort((a,b)=>Math.abs(b[1].score)-Math.abs(a[1].score)).slice(0,3).map(([s])=>s);
 
-      // Find supply chain ripples immediately
-      const ripples = findSupplyChainRipple(scored.signals);
-      if (ripples.length) console.log(`     🔗 Ripple: ${ripples.map(r=>r.ticker).join(", ")}`);
+      // Supply chain ripples: hardcoded map + AI-detected dynamic ripples
+      const ripples = [
+        ...findSupplyChainRipple(scored.signals),
+        ...(scored.dynamicRipples||[]),
+      ].filter((r,i,arr) => arr.findIndex(x=>x.ticker===r.ticker)===i).slice(0,8);
+      if (ripples.length) console.log(`     🔗 Ripple plays: ${ripples.map(r=>r.ticker).join(", ")}`);
+
+      // Inject AI-found primary tickers into item for alerts
+      if (aiScreen?.primary_tickers?.length) {
+        item.ticker = item.ticker || aiScreen.primary_tickers[0];
+        item.allTickers = aiScreen.primary_tickers;
+      }
 
       // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
       const highConfidence = scored.confidence >= 75;
