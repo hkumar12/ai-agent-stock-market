@@ -706,11 +706,27 @@ async function main() {
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   startHealthServer();
-  await poll();
 
-  const intervalMs = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
-  setInterval(async () => { await poll(); nextPollTime = new Date(Date.now()+intervalMs).toISOString(); }, intervalMs);
-  nextPollTime = new Date(Date.now()+intervalMs).toISOString();
+  // Use a setTimeout chain instead of setInterval — guarantees the next poll
+  // only starts AFTER the current one fully completes, preventing overlap.
+  // With 9 sources x 25s gaps a poll can easily exceed a short interval.
+  async function scheduledPoll() {
+    const pollStart = Date.now();
+    await poll();
+    const pollDurationMs = Date.now() - pollStart;
+    const intervalMs     = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
+
+    // Wait the configured interval AFTER poll finishes.
+    // If poll itself ran longer, wait at least 30s before next cycle.
+    const waitMs = Math.max(intervalMs - pollDurationMs, 30000);
+    nextPollTime = new Date(Date.now() + waitMs).toISOString();
+
+    const waitMin = Math.round(waitMs / 60000 * 10) / 10;
+    console.log(`\n⏱  Poll took ${Math.round(pollDurationMs/1000)}s. Next poll in ${waitMin}min at ${new Date(nextPollTime).toLocaleTimeString()}`);
+    setTimeout(scheduledPoll, waitMs);
+  }
+
+  scheduledPoll();
 }
 
-main().catch(err => { console.error("💥 Fatal:", err); process.exit(1); });
+main().catch(err => { console.error("\ud83d\udca5 Fatal:", err); process.exit(1); });
