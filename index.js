@@ -111,20 +111,171 @@ const SUPPLY_CHAIN_MAP = {
 };
 
 // ── Sector / layer definitions ─────────────────────────────────────────────
+// Each layer has a hiddenGems array — less-covered tickers with higher upside
+// These are specifically surfaced in alerts as the "non-obvious" plays
 const LAYERS = {
-  power:         { label:"Power & utilities",  emoji:"⚡", tickers:["NEE","CEG","VST","DUK","AES"],          etf:"XLU",  peers:["NEE","CEG","VST"] },
-  water:         { label:"Water & cooling",    emoji:"💧", tickers:["AWK","WTRG","VRT","SMCI"],              etf:"PHO",  peers:["AWK","VRT","SMCI"] },
-  datacenter:    { label:"Data center REITs",  emoji:"🏢", tickers:["EQIX","DLR","IRM","AMT"],              etf:"XLRE", peers:["EQIX","DLR","IRM"] },
-  chips:         { label:"Chips & semis",      emoji:"🔬", tickers:["NVDA","AMD","AVGO","AMAT","ASML","TSM"],etf:"SOXX", peers:["NVDA","AMD","AVGO"] },
-  networking:    { label:"Networking & fiber", emoji:"🌐", tickers:["CSCO","ANET","LITE","CIEN"],            etf:"IGN",  peers:["CSCO","ANET","CIEN"] },
-  cloud:         { label:"Cloud & data",       emoji:"☁️", tickers:["AMZN","MSFT","GOOGL","SNOW","MDB","NET","DDOG"], etf:"WCLD", peers:["AMZN","MSFT","GOOGL"] },
-  aimodels:      { label:"AI models",          emoji:"🤖", tickers:["MSFT","GOOGL","META","PLTR","AI"],      etf:"AIQ",  peers:["MSFT","GOOGL","META"] },
-  applications:  { label:"AI software",        emoji:"💻", tickers:["NOW","PLTR","PATH","DDOG","ZS","CRWD"], etf:"IGV",  peers:["NOW","PLTR","CRWD"] },
-  energy:        { label:"Energy & oil",       emoji:"⛽", tickers:["XOM","CVX","OXY","COP"],               etf:"XLE",  peers:["XOM","CVX","OXY"] },
-  defense:       { label:"Defense",            emoji:"🛡️", tickers:["LMT","RTX","NOC","GD"],               etf:"ITA",  peers:["LMT","RTX","NOC"] },
-  manufacturing: { label:"Manufacturing",      emoji:"🏭", tickers:["CAT","DE","NUE","STLD"],               etf:"XLI",  peers:["CAT","DE","NUE"] },
-  crypto:        { label:"Crypto",             emoji:"₿",  tickers:["COIN","MSTR","IBIT"],                 etf:"BITO", peers:["COIN","MSTR","IBIT"] },
-  macro:         { label:"Macro / rates",      emoji:"📊", tickers:["TLT","GLD","DXY","SPY","QQQ"],        etf:"SPY",  peers:["SPY","QQQ","TLT"] },
+  power: {
+    label:"Power & utilities", emoji:"⚡", etf:"XLU",
+    tickers:   ["NEE","CEG","VST","DUK","AES","ETN","GEV"],
+    peers:     ["NEE","CEG","VST"],
+    hiddenGems:[
+      { ticker:"TLN",  why:"Talen Energy — pure-play nuclear power selling directly to data centers, less-covered than CEG" },
+      { ticker:"GEV",  why:"GE Vernova — wind/gas turbines, $200B backlog by 2028, only ~2 years old as standalone stock" },
+      { ticker:"POWL", why:"Powell Industries — electrical switchgear for data centers and grid, tiny cap, massive order book" },
+      { ticker:"WATT", why:"Energous — wireless charging tech for AI edge devices, early stage but strategic" },
+      { ticker:"SMR",  why:"NuScale Power — small modular reactor play, Microsoft signed LOI for SMR power supply" },
+    ],
+  },
+  water: {
+    label:"Water & cooling", emoji:"💧", etf:"PHO",
+    tickers:   ["AWK","WTRG","VRT","SMCI","LIQT"],
+    peers:     ["AWK","VRT","SMCI"],
+    hiddenGems:[
+      { ticker:"ITRI", why:"Itron — smart water meters for data center campuses, barely covered vs VRT" },
+      { ticker:"PUMP", why:"ProPetro — liquid cooling infrastructure play, pivoting to data center cooling" },
+      { ticker:"CLFD", why:"Clearfield — fiber and thermal management for edge AI deployments" },
+      { ticker:"XPEL", why:"Surface protection films used in liquid cooling systems, niche but growing fast" },
+    ],
+  },
+  datacenter: {
+    label:"Data center REITs", emoji:"🏢", etf:"XLRE",
+    tickers:   ["EQIX","DLR","IRM","AMT","CONE"],
+    peers:     ["EQIX","DLR","IRM"],
+    hiddenGems:[
+      { ticker:"SBAC", why:"SBA Communications — tower REIT pivoting to edge AI compute nodes, undervalued vs peers" },
+      { ticker:"UNIT", why:"Uniti Group — fiber network owner, data center connectivity play, deeply undervalued" },
+      { ticker:"IIPR", why:"Innovative Industrial — pivoting facilities toward AI compute colocation" },
+      { ticker:"RXST", why:"RxSight — occupies a niche in specialized data facilities, small float" },
+    ],
+  },
+  chips: {
+    label:"Chips & semis", emoji:"🔬", etf:"SOXX",
+    tickers:   ["NVDA","AMD","AVGO","AMAT","ASML","TSM","MRVL","MU"],
+    peers:     ["NVDA","AMD","AVGO"],
+    hiddenGems:[
+      { ticker:"PLAB", why:"Photronics — makes photomasks for AI chips, P/E 14 vs sector avg 35, revenues beat by 5.5% Q3 2025" },
+      { ticker:"SKYT", why:"SkyWater Technology — US-based quantum/AI chip foundry, only domestic advanced fab play" },
+      { ticker:"AEHR", why:"AEHR Test Systems — wafer-level burn-in testing for AI chips, every NVDA chip goes through testing" },
+      { ticker:"CRDO", why:"Credo Technology — high-speed connectivity chips for AI clusters, outperforming but still cheap" },
+      { ticker:"SMTC", why:"Semtech — analog chips for data center optical interconnects, trading below historical multiples" },
+      { ticker:"ENTG", why:"Entegris — chip materials/chemicals supplier, high quality at average multiples per Fabricated Knowledge" },
+      { ticker:"TSEM", why:"Tower Semiconductor — specialty foundry for analog AI chips, NVDA-like demand but fraction of valuation" },
+    ],
+  },
+  networking: {
+    label:"Networking & fiber", emoji:"🌐", etf:"IGN",
+    tickers:   ["CSCO","ANET","LITE","CIEN","MRVL","COHR"],
+    peers:     ["CSCO","ANET","CIEN"],
+    hiddenGems:[
+      { ticker:"COHR", why:"Coherent — optical transceivers for 400G/800G AI clusters, analysts call it best optics play for 2026" },
+      { ticker:"LITE", why:"Lumentum — optical components, trading cheap vs COHR despite similar exposure" },
+      { ticker:"IIVI", why:"II-VI / Coherent merger play — laser components inside every AI interconnect" },
+      { ticker:"CALX", why:"Calix — AI-powered broadband platforms, strong Q4 2025, Zacks Strong Buy, overlooked vs bigger names" },
+      { ticker:"LUMN", why:"Lumen Technologies — massive fiber network, debt restructured, AI backbone demand tailwind" },
+      { ticker:"FN",   why:"Fabrinet — contract manufacturer for optical networking, makes COHR and LITE components" },
+    ],
+  },
+  cloud: {
+    label:"Cloud & data", emoji:"☁️", etf:"WCLD",
+    tickers:   ["AMZN","MSFT","GOOGL","SNOW","MDB","NET","DDOG"],
+    peers:     ["AMZN","MSFT","GOOGL"],
+    hiddenGems:[
+      { ticker:"ESTC", why:"Elastic NV — vector search database, every AI app needs it, less covered than SNOW/MDB" },
+      { ticker:"CFLT", why:"Confluent — real-time data streaming, critical AI pipeline plumbing, down 40% from highs" },
+      { ticker:"SMAR", why:"Smartsheet — AI workflow automation, enterprise, trades at massive discount to NOW" },
+      { ticker:"TDC",  why:"Teradata — legacy data warehouse pivoting to AI, strong Q4 2025 earnings, Zacks Buy" },
+      { ticker:"INOD", why:"Innodata — AI data services for Big Tech GenAI training, small cap, 51% revenue growth in 2025" },
+    ],
+  },
+  aimodels: {
+    label:"AI models", emoji:"🤖", etf:"AIQ",
+    tickers:   ["MSFT","GOOGL","META","PLTR","AI","BBAI"],
+    peers:     ["MSFT","GOOGL","META"],
+    hiddenGems:[
+      { ticker:"BBAI", why:"BigBear.ai — defense AI analytics, tiny float, government contracts, asymmetric upside" },
+      { ticker:"RDNT", why:"RadNet — AI medical imaging analysis, healthcare AI is under-owned vs enterprise AI" },
+      { ticker:"RXRX", why:"Recursion Pharma — AI drug discovery, NVDA invested directly, high risk/reward" },
+      { ticker:"GFAI", why:"Guardforce AI — AI security robotics, tiny cap, growing Asia contracts" },
+      { ticker:"SOUN", why:"SoundHound AI — voice AI, automotive + food service, small float = volatile but high upside" },
+    ],
+  },
+  applications: {
+    label:"AI software", emoji:"💻", etf:"IGV",
+    tickers:   ["NOW","PLTR","PATH","DDOG","ZS","CRWD"],
+    peers:     ["NOW","PLTR","CRWD"],
+    hiddenGems:[
+      { ticker:"FIVN", why:"Five9 — cloud contact center, 100% AI attach rate on enterprise deals, single-digit P/E after selloff" },
+      { ticker:"JAMF", why:"JAMF — Apple device management + AI security, IPO overvaluation gone, now trading below growth rate" },
+      { ticker:"ASAN", why:"Asana — AI project management, deeply discounted vs NOW despite similar AI workflow exposure" },
+      { ticker:"PATH", why:"UiPath — RPA automation, P/E 30 vs NOW at 60, same enterprise AI story at half the price" },
+      { ticker:"RDVT", why:"Red Violet — AI-powered identity verification, tiny cap, profitable, under the radar" },
+    ],
+  },
+  energy: {
+    label:"Energy & oil", emoji:"⛽", etf:"XLE",
+    tickers:   ["XOM","CVX","OXY","COP"],
+    peers:     ["XOM","CVX","OXY"],
+    hiddenGems:[
+      { ticker:"DINO", why:"HF Sinclair — refining + renewables, AI-driven logistics optimization, cheap vs majors" },
+      { ticker:"BATL", why:"Battalion Oil — small independent, high leverage to oil price moves" },
+      { ticker:"KRP",  why:"Kimbell Royalty — royalty play on AI data center energy demand, no capex risk" },
+    ],
+  },
+  defense: {
+    label:"Defense", emoji:"🛡️", etf:"ITA",
+    tickers:   ["LMT","RTX","NOC","GD","HII"],
+    peers:     ["LMT","RTX","NOC"],
+    hiddenGems:[
+      { ticker:"KTOS", why:"Kratos Defense — drone AI and autonomous systems, small cap, massive DoD contract pipeline" },
+      { ticker:"RCAT", why:"Red Cat Holdings — military drone swarms, tiny float, high risk/reward on defense AI" },
+      { ticker:"AJRD", why:"Aerojet Rocketdyne — rocket propulsion for hypersonics, sole-source DoD contracts" },
+      { ticker:"CACI", why:"CACI International — government AI analytics, steady grower, under-covered vs big primes" },
+    ],
+  },
+  manufacturing: {
+    label:"Manufacturing", emoji:"🏭", etf:"XLI",
+    tickers:   ["CAT","DE","NUE","STLD","ETN"],
+    peers:     ["CAT","DE","NUE"],
+    hiddenGems:[
+      { ticker:"IESC", why:"IES Holdings — electrical contractors building AI data centers, tiny float, explosive backlog" },
+      { ticker:"MYRG", why:"MYR Group — electrical construction for data centers and grid, small cap, order book surging" },
+      { ticker:"PRIM", why:"Primoris Services — infrastructure construction, data center grid connections, cheap valuation" },
+      { ticker:"PLFL", why:"Preformed Line Products — grid modernization hardware, 21% YoY revenue growth, expanding in Europe" },
+    ],
+  },
+  crypto: {
+    label:"Crypto", emoji:"₿", etf:"BITO",
+    tickers:   ["COIN","MSTR","IBIT","CLSK"],
+    peers:     ["COIN","MSTR","IBIT"],
+    hiddenGems:[
+      { ticker:"CLSK", why:"CleanSpark — Bitcoin miner pivoting to AI-ready data center provider, cheap power PPAs" },
+      { ticker:"RIOT", why:"Riot Platforms — largest US Bitcoin miner, converting mining sites to AI compute" },
+      { ticker:"HUT",  why:"Hut 8 — Canadian miner with US data center expansion, lower profile than MSTR" },
+      { ticker:"IREN", why:"Iris Energy — Australian miner building high-performance AI compute clusters" },
+    ],
+  },
+  nuclear: {
+    label:"Nuclear & uranium", emoji:"☢️", etf:"NLR",
+    tickers:   ["CEG","CCJ","UEC","UUUU","NNE"],
+    peers:     ["CEG","CCJ","NNE"],
+    hiddenGems:[
+      { ticker:"UUUU", why:"Energy Fuels — only US rare earth + uranium producer, SMR fuel supply play" },
+      { ticker:"UEC",  why:"Uranium Energy Corp — search interest +174% YoY, pure-play US uranium, no debt" },
+      { ticker:"NNE",  why:"Nano Nuclear Energy — micro nuclear reactor designer, early stage, Microsoft/Google PPA tailwind" },
+      { ticker:"OKLO", why:"Oklo — Sam Altman-backed micro nuclear, OpenAI data center power deal rumors, high risk/reward" },
+      { ticker:"BWXT", why:"BWX Technologies — makes nuclear components for US Navy and commercial reactors, steady compounder" },
+    ],
+  },
+  macro: {
+    label:"Macro / rates", emoji:"📊", etf:"SPY",
+    tickers:   ["TLT","GLD","DXY","SPY","QQQ"],
+    peers:     ["SPY","QQQ","TLT"],
+    hiddenGems:[
+      { ticker:"BITX", why:"2x Bitcoin ETF — for macro risk-on signals with high risk tolerance" },
+      { ticker:"TQQQ", why:"3x QQQ — aggressive leveraged play on AI/tech macro tailwinds" },
+      { ticker:"SOXL", why:"3x Semiconductor ETF — leveraged chip play for high-confidence chip signals" },
+    ],
+  },
 };
 
 const SIGNAL_KW = {
@@ -291,12 +442,16 @@ function scoreStatement(text, signalType = "news") {
 }
 
 // ── Supply chain ripple finder ─────────────────────────────────────────────
+// Returns hardcoded supply chain plays + hidden gems from triggered layers
 function findSupplyChainRipple(signals) {
   const ripples = [];
+  const seen = new Set();
+
   const triggeredTickers = Object.entries(signals)
     .filter(([,d]) => d.direction === "BUY")
     .flatMap(([s]) => LAYERS[s]?.tickers || []);
 
+  // Hardcoded supply chain relationships
   for (const ticker of triggeredTickers) {
     const map = SUPPLY_CHAIN_MAP[ticker];
     if (!map) continue;
@@ -306,12 +461,34 @@ function findSupplyChainRipple(signals) {
       ...(map.beneficiaries || []).map(d => ({ ...d, relationship: "beneficiary of" })),
     ];
     for (const dep of all) {
-      if (!ripples.find(r => r.ticker === dep.ticker)) {
+      if (!seen.has(dep.ticker)) {
+        seen.add(dep.ticker);
         ripples.push({ ...dep, parent: ticker });
       }
     }
   }
-  return ripples.slice(0, 8);
+
+  // Add hidden gems from triggered layers (these are the less-obvious plays)
+  const triggeredLayers = Object.entries(signals)
+    .filter(([,d]) => d.direction === "BUY")
+    .map(([s]) => s);
+
+  for (const layer of triggeredLayers) {
+    for (const gem of (LAYERS[layer]?.hiddenGems || [])) {
+      if (!seen.has(gem.ticker)) {
+        seen.add(gem.ticker);
+        ripples.push({
+          ticker: gem.ticker,
+          reason: gem.why,
+          relationship: "hidden gem in",
+          parent: layer,
+          isHiddenGem: true,
+        });
+      }
+    }
+  }
+
+  return ripples.slice(0, 10);
 }
 
 // ── Signal sources ─────────────────────────────────────────────────────────
@@ -585,20 +762,33 @@ ${rippleSummary}
 Provide a smart aggressive investor analysis with these exact sections:
 1. SUMMARY (2 sentences — what happened and why it matters for markets)
 2. MARKET CONTEXT (1 sentence — is timing good given SPY/VIX/upcoming events?)
-3. BEST PLAY (specific ticker + entry strategy + 1-3 month price target + why)
-4. SUPPLY CHAIN PLAY (best ripple/dependent company to buy, less obvious, higher upside %)
-5. SECONDARY PLAY (another ticker, brief reason)
-6. RISK (single biggest risk to this thesis)
+3. OBVIOUS PLAY (the large cap everyone will buy — name it, give target, but keep brief)
+4. HIDDEN GEM (the small/mid-cap most investors miss — specific ticker, why it benefits MORE on % basis, price target)
+5. SUPPLY CHAIN PLAY (2nd/3rd order company in the dependency chain, even less obvious)
+6. RISK (single biggest risk to this thesis in 1 sentence)
 7. CONVICTION: [score 1-100] — reason in 1 sentence
 
-Be aggressive, specific, name prices and % targets. Assume the reader will act on this today.`;
+Spend most of your analysis on sections 4 and 5. These are where the real alpha is. Be specific: name exact tickers, current price if known, % upside target, and the specific catalyst that will move it.`;
 
   try {
     const response = await withRetry(() => getClient().messages.create({
       model:"claude-sonnet-4-6", max_tokens:800,
       system:[{
         type:"text",
-        text:"You are an aggressive growth investor analyst. Profile: high risk tolerance, 1-3 month horizon, looking for asymmetric upside. Give specific, actionable, data-driven analysis. Name exact tickers, prices, and % targets. Always suggest a supply chain / dependent company play as a less-obvious high-upside idea.",
+        text:`You are an aggressive growth investor analyst. Profile: high risk tolerance, 1-3 month horizon, looking for asymmetric upside.
+
+CORE RULE: Never just recommend NVDA, MSFT, AMZN, GOOGL as your primary play. Everyone knows those. Your job is to find the NON-OBVIOUS plays with higher % upside.
+
+Hidden gem framework (use these when relevant signals fire):
+- NVDA/chip signal: PLAB (photomasks P/E 14), AEHR (chip testing), CRDO (connectivity), TSEM (specialty foundry), FN (Fabrinet), ENTG (materials)
+- Data center signal: POWL (switchgear tiny cap), IESC (electrical contractors), MYRG (grid construction), PLFL (grid hardware 21% YoY growth)
+- Power/nuclear signal: UEC (uranium +174% search interest), GEV (GE Vernova turbines $200B backlog), NNE (micro nuclear), OKLO (Sam Altman SMR), BWXT (naval nuclear compounder)
+- Networking signal: FN (Fabrinet makes the components), COHR (optics), SMTC (analog cheap), CALX (broadband AI Zacks Strong Buy), LUMN (fiber backbone restructured)
+- Defense signal: KTOS (drone AI small cap), RCAT (military drones tiny float), CACI (gov analytics steady), AJRD (propulsion sole-source)
+- Cloud/AI signal: INOD (AI data services 51% revenue growth), CFLT (streaming pipeline), ESTC (vector search), FIVN (contact center AI single-digit PE)
+- Crypto signal: CLSK (CleanSpark pivoting to AI data centers), IREN (Iris Energy compute), HUT (Hut 8 US expansion)
+
+Give specific, actionable analysis. Name exact tickers, price targets, % upside. Be concrete.`,
         cache_control:{ type:"ephemeral" },  // cache analyst persona — same every call
       }],
       messages:[{ role:"user", content: prompt }],
@@ -619,8 +809,13 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
   const se = { bullish:"📈", bearish:"📉", neutral:"➡️" }[scored.sentiment] || "➡️";
   const conviction = extractConviction(analysis);
 
-  const rippleText = ripples.length
-    ? `\n🔗 *Supply Chain Plays:* ${ripples.slice(0,3).map(r=>`${r.ticker}`).join(" · ")}`
+  const regularRipples = ripples.filter(r => !r.isHiddenGem).slice(0,3);
+  const hiddenGems     = ripples.filter(r =>  r.isHiddenGem).slice(0,4);
+  const rippleText = regularRipples.length
+    ? `\n🔗 *Supply Chain:* ${regularRipples.map(r=>r.ticker).join(" · ")}`
+    : "";
+  const gemText = hiddenGems.length
+    ? `\n💎 *Hidden Gems:* ${hiddenGems.map(r=>`${r.ticker}`).join(" · ")}`
     : "";
   const aiReasonText = scored.aiScreen?.reasoning
     ? `\n🧠 _${scored.aiScreen.reasoning}_`
@@ -640,6 +835,7 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
     aiReasonText,
     primaryTickersText,
     rippleText,
+    gemText,
     ``,
     `📋 *Analysis:*`,
     ...lines,
@@ -681,10 +877,18 @@ async function sendGmailAlert(item, scored, analysis, ripples) {
       <td style="padding:7px 0;border-bottom:1px solid #1a1a2a;text-align:right;"><span style="padding:2px 10px;border-radius:4px;font-size:11px;font-weight:700;background:${d.direction==="BUY"?"rgba(0,208,132,0.18)":"rgba(255,71,87,0.18)"};color:${d.direction==="BUY"?"#00d084":"#ff4757"}">${d.direction}</span></td>
     </tr>`).join("");
 
-  const ripplesHtml = ripples.length ? ripples.slice(0,5).map(r=>`
+  const regularRipplesList = ripples.filter(r => !r.isHiddenGem).slice(0,4);
+  const hiddenGemsList     = ripples.filter(r =>  r.isHiddenGem).slice(0,5);
+  const ripplesHtml = regularRipplesList.length ? regularRipplesList.map(r=>`
     <div style="padding:7px 0;border-bottom:1px solid #1a1a2a;">
       <strong style="color:#c8960a">${r.ticker}</strong>
       <span style="color:#888;font-size:11px;margin-left:6px;">${r.relationship} ${r.parent}</span>
+      <div style="color:#aaa;font-size:12px;margin-top:2px;">${r.reason}</div>
+    </div>`).join("") : "";
+  const hiddenGemsHtml = hiddenGemsList.length ? hiddenGemsList.map(r=>`
+    <div style="padding:7px 0;border-bottom:1px solid #1a1a2a;">
+      <strong style="color:#00d084">${r.ticker}</strong>
+      <span style="color:#888;font-size:11px;margin-left:6px;">💎 non-obvious play</span>
       <div style="color:#aaa;font-size:12px;margin-top:2px;">${r.reason}</div>
     </div>`).join("") : "";
 
@@ -712,7 +916,8 @@ async function sendGmailAlert(item, scored, analysis, ripples) {
     ${item.url?`<a href="${item.url}" style="font-size:11px;color:#556;display:inline-block;margin-top:8px;">🔗 Source →</a>`:""}
   </div>
   ${topSignalsHtml?`<div style="background:rgba(255,255,255,0.03);border:1px solid #2a2a3a;border-radius:10px;padding:14px 18px;margin-bottom:14px;"><table style="width:100%;border-collapse:collapse;">${topSignalsHtml}</table></div>`:""}
-  ${ripplesHtml?`<div style="background:rgba(200,150,10,0.07);border:1px solid #c8960a30;border-radius:10px;padding:14px 18px;margin-bottom:14px;"><div style="font-size:11px;color:#c8960a;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;">🔗 Supply Chain Ripple Plays</div>${ripplesHtml}</div>`:""}
+  ${ripplesHtml?`<div style="background:rgba(200,150,10,0.07);border:1px solid #c8960a30;border-radius:10px;padding:14px 18px;margin-bottom:14px;"><div style="font-size:11px;color:#c8960a;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;">🔗 Supply Chain Plays</div>${ripplesHtml}</div>`:""}
+  ${hiddenGemsHtml?`<div style="background:rgba(0,208,132,0.06);border:1px solid #00d08430;border-radius:10px;padding:14px 18px;margin-bottom:14px;"><div style="font-size:11px;color:#00d084;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;">💎 Hidden Gem Plays — Less Obvious, Higher % Upside</div>${hiddenGemsHtml}</div>`:""}
   <div style="background:rgba(20,10,40,0.9);border:1px solid #2a1a5a;border-radius:10px;padding:16px 18px;margin-bottom:14px;">
     <div style="font-size:11px;color:#9b5de5;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;">🤖 Smart Investor Analysis</div>
     ${analysisHtml}
@@ -759,8 +964,9 @@ Analyse the news item and return ONLY a raw JSON object (no markdown, no preambl
   "sentiment": "bullish"|"bearish"|"neutral",
   "reasoning": "1 sentence why",
   "primary_tickers": ["TICK1","TICK2"],
-  "ripple_tickers": ["TICK3","TICK4"],
-  "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","macro"],
+  "hidden_gem_tickers": ["TICK3","TICK4"],
+  "ripple_tickers": ["TICK5","TICK6"],
+  "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","nuclear","macro"],
   "signal_type_boost": "earnings"|"presidential_endorsement"|"policy"|"options_flow"|"guidance"|"contract"|"regulation"|"none",
   "negated": true|false
 }
@@ -776,7 +982,15 @@ CRITICAL rules:
 - "go out and buy Dell" from a president = 92+ confidence, presidential_endorsement, tickers [DELL,INTC,MSFT]
 - "chip demand not as strong" = negated:true, bearish, lower confidence
 - Unknown company names: look them up mentally and include their ticker
-- Always include supply chain ripple tickers, not just the obvious primary one`
+- primary_tickers: the obvious large-cap plays EVERYONE will think of
+- hidden_gem_tickers: small/mid-cap names most investors MISS that will benefit MORE on % basis
+  Examples: NVDA signal → hidden gems: PLAB (photomasks), AEHR (chip testing), CRDO (connectivity), TSEM (specialty foundry)
+  Data center signal → hidden gems: POWL (switchgear), IESC (electrical contractors), MYRG (grid construction)
+  Nuclear/power signal → hidden gems: UEC (uranium), NNE (micro nuclear), OKLO (Sam Altman's SMR), GEV (turbines)
+  Networking signal → hidden gems: FN (Fabrinet makes the components), SMTC (analog chips), CALX (broadband AI)
+  Defense signal → hidden gems: KTOS (drone AI), RCAT (military drones), CACI (gov AI analytics)
+- ripple_tickers: 2nd/3rd order companies affected (suppliers, customers, competitors)
+- Always prioritise hidden gems — they have more upside than obvious picks`
       }],
       messages: [{ role: "user", content: `Source: ${item.sourceLabel} (${item.signalType||"news"})\nText: ${fullText.slice(0,400)}` }],
     }));
