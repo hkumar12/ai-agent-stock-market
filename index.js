@@ -567,23 +567,29 @@ If nothing found return: []`
   {
     id:"congress", label:"Congress trades", emoji:"🏛️",
     searchQuery:"Congress stock trade disclosure STOCK Act purchase sale today 2025 Pelosi senator representative",
-    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for the latest US Congress member stock trade disclosures (STOCK Act filings) and return up to 4 items:
-[{"source":"STOCK Act","time":"1 day ago","headline":"Nancy Pelosi buys NVDA calls","quote":"brief description of trade max 150 chars","url":"","signalType":"congress","ticker":"NVDA","member":"Nancy Pelosi","party":"D","transaction":"purchase","amount":"$250k-$500k","committee":"relevant committee if known"}]
-If nothing found return: []`
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT WHATSOEVER.
+Search web for latest Congress STOCK Act stock trade disclosures today 2025.
+Return JSON array only:
+[{"source":"STOCK Act","time":"1 day ago","headline":"Pelosi buys NVDA","quote":"trade detail max 100 chars","url":"","signalType":"congress","ticker":"NVDA","member":"Nancy Pelosi","party":"D","transaction":"purchase","amount":"$250k"}]
+Empty result: []`
   },
   {
     id:"insiders", label:"CEO/insider buying", emoji:"👔",
     searchQuery:"CEO CFO insider buying SEC Form 4 stock purchase exec buy own shares today 2025",
-    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest SEC Form 4 insider purchases where executives are buying their OWN company stock (not sales) and return up to 4 items:
-[{"source":"SEC Form 4","time":"2 hours ago","headline":"NVDA CEO Jensen Huang buys $5M stock","quote":"brief description max 150 chars","url":"","signalType":"insider","ticker":"NVDA","insider":"Jensen Huang","role":"CEO","transaction":"purchase","value":"$5M","shares":"12,500"}]
-Only include purchases not sales. If nothing found return: []`
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT WHATSOEVER.
+Search web for latest SEC Form 4 insider stock purchases by executives today 2025. Only purchases, not sales.
+Return JSON array only:
+[{"source":"SEC Form 4","time":"2 hours ago","headline":"CEO buys $5M stock","quote":"detail max 100 chars","url":"","signalType":"insider","ticker":"NVDA","insider":"Jensen Huang","role":"CEO","transaction":"purchase","value":"$5M"}]
+Empty result: []`
   },
   {
     id:"smartmoney", label:"Hedge fund & 13F signals", emoji:"🦈",
     searchQuery:"Warren Buffett Berkshire 13F hedge fund Ackman Burry Druckenmiller ARK Cathie Wood buy position 2025",
-    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest Buffett/Berkshire, Bill Ackman, Michael Burry, Stanley Druckenmiller, David Tepper, or ARK Invest position changes or 13F filings and return up to 4 items:
-[{"source":"13F Filing","time":"2 days ago","headline":"Buffett adds $2B Apple position","quote":"brief description max 150 chars","url":"","signalType":"smartmoney","ticker":"AAPL","investor":"Warren Buffett","fund":"Berkshire Hathaway","action":"added","value":"$2B","conviction":"high"}]
-If nothing found return: []`
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT WHATSOEVER.
+Search web for latest Buffett Berkshire Ackman Burry Druckenmiller ARK Invest stock moves 2025.
+Return JSON array only:
+[{"source":"13F Filing","time":"2 days ago","headline":"Buffett adds Apple","quote":"detail max 100 chars","url":"","signalType":"smartmoney","ticker":"AAPL","investor":"Warren Buffett","fund":"Berkshire","action":"added","value":"$2B"}]
+Empty result: []`
   },
 ];
 
@@ -619,10 +625,13 @@ async function fetchSourceStatements(source) {
   trackCacheUsage(response);
   const text = response.content.find(c=>c.type==="text")?.text || "";
   if (!text) { console.log("     ⚠️  No text block"); return []; }
+  // Pre-clean: strip markdown fences and prose preamble before parsing
+  const preClean = text.replace(/```json/gi,"").replace(/```/g,"").replace(/^[^\[{]*/,"").trim();
+  const parseTarget = preClean || text;
   console.log("     📝 Raw (first 200): " + text.slice(0,200));
   try {
-    // Strategy 1: find JSON array anywhere in response
-    const match = text.match(/\[[\s\S]*?\]/);
+    // Strategy 1: find JSON array anywhere in response (uses pre-cleaned text)
+    const match = parseTarget.match(/\[[\s\S]*?\]/);
     if (match) {
       const items = JSON.parse(match[0]);
       if (Array.isArray(items) && items.length > 0) {
@@ -648,8 +657,8 @@ async function fetchSourceStatements(source) {
     console.log("     🔄 Asking Haiku to reformat...");
     const retry = await getClient().messages.create({
       model:"claude-haiku-4-5", max_tokens:300,
-      system:[{ type:"text", text:"Extract news items from the text and return ONLY a raw JSON array starting with [ and ending with ]. Each item needs: source, time, headline, quote, url, signalType. No other text.", cache_control:{ type:"ephemeral" } }],
-      messages:[{ role:"user", content: text.slice(0,2000) }],
+      system:[{ type:"text", text:"Output ONLY a JSON array. Start with [. End with ]. No prose, no markdown. Extract items with fields: source, time, headline, quote, url, signalType. If nothing extractable return [].", cache_control:{ type:"ephemeral" } }],
+      messages:[{ role:"user", content: "Extract JSON array from this text. Reply with [ to start:\n" + text.slice(0,1500) }],
     });
     trackCacheUsage(retry);
     const retryText = retry.content.find(c=>c.type==="text")?.text || "";
