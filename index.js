@@ -443,15 +443,42 @@ function scoreStatement(text, signalType = "news") {
 
 // ── Supply chain ripple finder ─────────────────────────────────────────────
 // Returns hardcoded supply chain plays + hidden gems from triggered layers
+// Hidden gems are collected FIRST and separately to guarantee they appear
 function findSupplyChainRipple(signals) {
-  const ripples = [];
+  const chainRipples = [];
+  const gemRipples   = [];
   const seen = new Set();
 
   const triggeredTickers = Object.entries(signals)
     .filter(([,d]) => d.direction === "BUY")
     .flatMap(([s]) => LAYERS[s]?.tickers || []);
 
-  // Hardcoded supply chain relationships
+  const triggeredLayers = Object.entries(signals)
+    .filter(([,d]) => d.direction === "BUY")
+    .map(([s]) => s);
+
+  // ── Hidden gems first (guaranteed slots) ─────────────────────────────
+  // Pick top 2 gems from each triggered layer (up to 6 gems total)
+  for (const layer of triggeredLayers) {
+    let layerGems = 0;
+    for (const gem of (LAYERS[layer]?.hiddenGems || [])) {
+      if (layerGems >= 2) break;
+      if (!seen.has(gem.ticker)) {
+        seen.add(gem.ticker);
+        gemRipples.push({
+          ticker: gem.ticker,
+          reason: gem.why,
+          relationship: "hidden gem in",
+          parent: layer,
+          isHiddenGem: true,
+        });
+        layerGems++;
+      }
+    }
+    if (gemRipples.length >= 6) break;
+  }
+
+  // ── Supply chain relationships second ─────────────────────────────────
   for (const ticker of triggeredTickers) {
     const map = SUPPLY_CHAIN_MAP[ticker];
     if (!map) continue;
@@ -461,34 +488,15 @@ function findSupplyChainRipple(signals) {
       ...(map.beneficiaries || []).map(d => ({ ...d, relationship: "beneficiary of" })),
     ];
     for (const dep of all) {
-      if (!seen.has(dep.ticker)) {
+      if (!seen.has(dep.ticker) && chainRipples.length < 5) {
         seen.add(dep.ticker);
-        ripples.push({ ...dep, parent: ticker });
+        chainRipples.push({ ...dep, parent: ticker, isHiddenGem: false });
       }
     }
   }
 
-  // Add hidden gems from triggered layers (these are the less-obvious plays)
-  const triggeredLayers = Object.entries(signals)
-    .filter(([,d]) => d.direction === "BUY")
-    .map(([s]) => s);
-
-  for (const layer of triggeredLayers) {
-    for (const gem of (LAYERS[layer]?.hiddenGems || [])) {
-      if (!seen.has(gem.ticker)) {
-        seen.add(gem.ticker);
-        ripples.push({
-          ticker: gem.ticker,
-          reason: gem.why,
-          relationship: "hidden gem in",
-          parent: layer,
-          isHiddenGem: true,
-        });
-      }
-    }
-  }
-
-  return ripples.slice(0, 10);
+  // Return gems first so they're never sliced out
+  return [...gemRipples, ...chainRipples];
 }
 
 // ── Signal sources ─────────────────────────────────────────────────────────
@@ -881,8 +889,8 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
 
   parts.push(``);
 
-  if (gems)  parts.push(`💎 ${gems}`);
-  if (chain) parts.push(`🔗 ${chain}`);
+  if (gems)  parts.push(`💎 *Hidden gems:* ${gems}`);
+  if (chain) parts.push(`🔗 *Supply chain:* ${chain}`);
 
   if (item.url) parts.push(`\n🔗 [Source](${item.url})`);
   parts.push(`_Not financial advice_`);
