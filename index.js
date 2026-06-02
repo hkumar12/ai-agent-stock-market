@@ -31,8 +31,8 @@ const CONFIG = {
   GMAIL_USER:           process.env.GMAIL_USER,
   GMAIL_APP_PASSWORD:   process.env.GMAIL_APP_PASSWORD,
   ALERT_EMAIL:          process.env.ALERT_EMAIL || process.env.GMAIL_USER,
-  CONFIDENCE_THRESHOLD: Number(process.env.CONFIDENCE_THRESHOLD) || 60,
-  POLL_INTERVAL_MIN:    Number(process.env.POLL_INTERVAL_MIN)    || 15,
+  CONFIDENCE_THRESHOLD: Number(process.env.CONFIDENCE_THRESHOLD) || 70,  // default 70 — fewer but stronger alerts
+  POLL_INTERVAL_MIN:    Number(process.env.POLL_INTERVAL_MIN)    || 30,  // default 30min — set env var to override
   TELEGRAM_BOT_TOKEN:   process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_IDS:    (process.env.TELEGRAM_CHAT_IDS || "").split(",").map(s => s.trim()).filter(Boolean),
 };
@@ -556,6 +556,27 @@ If nothing found return: []`
 [{"source":"Options Flow","time":"1 hour ago","headline":"Large call sweep on NVDA $900 strike","quote":"brief description max 150 chars","url":"","signalType":"options","ticker":"NVDA","type":"call","sentiment":"bullish"}]
 If nothing found return: []`
   },
+  {
+    id:"congress", label:"Congress trades", emoji:"🏛️",
+    searchQuery:"Congress stock trade disclosure STOCK Act purchase sale today 2025 Pelosi senator representative",
+    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for the latest US Congress member stock trade disclosures (STOCK Act filings) and return up to 4 items:
+[{"source":"STOCK Act","time":"1 day ago","headline":"Nancy Pelosi buys NVDA calls","quote":"brief description of trade max 150 chars","url":"","signalType":"congress","ticker":"NVDA","member":"Nancy Pelosi","party":"D","transaction":"purchase","amount":"$250k-$500k","committee":"relevant committee if known"}]
+If nothing found return: []`
+  },
+  {
+    id:"insiders", label:"CEO/insider buying", emoji:"👔",
+    searchQuery:"CEO CFO insider buying SEC Form 4 stock purchase exec buy own shares today 2025",
+    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest SEC Form 4 insider purchases where executives are buying their OWN company stock (not sales) and return up to 4 items:
+[{"source":"SEC Form 4","time":"2 hours ago","headline":"NVDA CEO Jensen Huang buys $5M stock","quote":"brief description max 150 chars","url":"","signalType":"insider","ticker":"NVDA","insider":"Jensen Huang","role":"CEO","transaction":"purchase","value":"$5M","shares":"12,500"}]
+Only include purchases not sales. If nothing found return: []`
+  },
+  {
+    id:"smartmoney", label:"Hedge fund & 13F signals", emoji:"🦈",
+    searchQuery:"Warren Buffett Berkshire 13F hedge fund Ackman Burry Druckenmiller ARK Cathie Wood buy position 2025",
+    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for latest Buffett/Berkshire, Bill Ackman, Michael Burry, Stanley Druckenmiller, David Tepper, or ARK Invest position changes or 13F filings and return up to 4 items:
+[{"source":"13F Filing","time":"2 days ago","headline":"Buffett adds $2B Apple position","quote":"brief description max 150 chars","url":"","signalType":"smartmoney","ticker":"AAPL","investor":"Warren Buffett","fund":"Berkshire Hathaway","action":"added","value":"$2B","conviction":"high"}]
+If nothing found return: []`
+  },
 ];
 
 // ── Anthropic client ───────────────────────────────────────────────────────
@@ -578,12 +599,12 @@ async function withRetry(fn, retries=3, delayMs=15000) {
 
 async function fetchSourceStatements(source) {
   const response = await withRetry(() => getClient().messages.create({
-    model:"claude-sonnet-4-6", max_tokens:1000,
+    model:"claude-haiku-4-5", max_tokens:500,  // Haiku = 20x cheaper than Sonnet for fetching
     tools:[{ type:"web_search_20250305", name:"web_search" }],
     system:[{
       type:"text",
       text: source.systemPrompt,
-      cache_control:{ type:"ephemeral" },  // cache system prompt — 90% cheaper on repeat calls
+      cache_control:{ type:"ephemeral" },
     }],
     messages:[{ role:"user", content: source.searchQuery }],
   }));
@@ -618,7 +639,7 @@ async function fetchSourceStatements(source) {
     // Strategy 3: ask Haiku to reformat
     console.log("     🔄 Asking Haiku to reformat...");
     const retry = await getClient().messages.create({
-      model:"claude-haiku-4-5", max_tokens:800,
+      model:"claude-haiku-4-5", max_tokens:300,
       system:[{ type:"text", text:"Extract news items from the text and return ONLY a raw JSON array starting with [ and ending with ]. Each item needs: source, time, headline, quote, url, signalType. No other text.", cache_control:{ type:"ephemeral" } }],
       messages:[{ role:"user", content: text.slice(0,2000) }],
     });
@@ -647,14 +668,14 @@ let marketCtxTime  = 0;
 
 async function fetchMarketContext(topSectors) {
   // Return cached value if fetched within last 10 minutes
-  if (marketCtxCache && (Date.now() - marketCtxTime) < 10 * 60 * 1000) {
-    console.log("     💾 Market context from local cache (10min TTL)");
+  if (marketCtxCache && (Date.now() - marketCtxTime) < 60 * 60 * 1000) {
+    console.log("     💾 Market context from local cache (60min TTL)");
     return marketCtxCache;
   }
   const etfs = [...new Set(topSectors.map(s => LAYERS[s]?.etf).filter(Boolean))].slice(0,3);
   try {
     const response = await withRetry(() => getClient().messages.create({
-      model:"claude-haiku-4-5", max_tokens:400,
+      model:"claude-haiku-4-5", max_tokens:150,
       tools:[{ type:"web_search_20250305", name:"web_search" }],
       system:[{
         type:"text",
@@ -679,7 +700,7 @@ async function fetchPeerComparison(topSectors) {
   if (!peers.length) return null;
   try {
     const response = await withRetry(() => getClient().messages.create({
-      model:"claude-haiku-4-5", max_tokens:600,
+      model:"claude-haiku-4-5", max_tokens:200,
       tools:[{ type:"web_search_20250305", name:"web_search" }],
       system:[{
         type:"text",
@@ -740,6 +761,14 @@ async function getDeepAnalysis(item, scored, articleText, marketCtx, peerData, r
     ? `\nMACRO EVENT: ${item.macro_type||""} — market impact expected: ${item.market_impact||"unknown"}.`
     : "";
 
+  const smartMoneyCtx = item.smartMoneyContext
+    ? `\nSMART MONEY DETAIL: ${item.smartMoneyContext}`
+    : "";
+
+  const convergenceCtx = scored.convergence
+    ? `\nCONVERGENCE ALERT: ${scored.convergence.summary}. Multiple smart money sources aligning is one of the rarest and strongest signals. Add +${scored.convergence.convergenceBonus} to conviction score.`
+    : "";
+
   const prompt = `
 INVESTOR PROFILE: ${INVESTOR_PROFILE.risk} | ${INVESTOR_PROFILE.horizon} | ${INVESTOR_PROFILE.style}
 
@@ -747,7 +776,7 @@ SOURCE: ${item.sourceLabel} (${item.signalType}) — ${item.time}
 HEADLINE: ${item.headline}
 QUOTE: "${item.quote}"
 ${articleText ? `\nARTICLE EXCERPT:\n${articleText.slice(0,1200)}` : ""}
-${earningsContext}${redditContext}${optionsContext}${macroContext}
+${earningsContext}${redditContext}${optionsContext}${macroContext}${smartMoneyCtx}${convergenceCtx}
 
 SECTOR SIGNALS: ${sectorSignals}
 
@@ -760,19 +789,20 @@ SUPPLY CHAIN RIPPLE (companies that will also be affected):
 ${rippleSummary}
 
 Provide a smart aggressive investor analysis with these exact sections:
-1. SUMMARY (2 sentences — what happened and why it matters for markets)
-2. MARKET CONTEXT (1 sentence — is timing good given SPY/VIX/upcoming events?)
-3. OBVIOUS PLAY (the large cap everyone will buy — name it, give target, but keep brief)
-4. HIDDEN GEM (the small/mid-cap most investors miss — specific ticker, why it benefits MORE on % basis, price target)
-5. SUPPLY CHAIN PLAY (2nd/3rd order company in the dependency chain, even less obvious)
-6. RISK (single biggest risk to this thesis in 1 sentence)
-7. CONVICTION: [score 1-100] — reason in 1 sentence
+1. SUMMARY (2 sentences — what happened and why it matters, include WHO made the trade if smart money source)
+2. SMART MONEY CONTEXT (1 sentence — what does this tell us about what insiders/congress/funds know?)
+3. MARKET CONTEXT (1 sentence — is timing good given SPY/VIX/upcoming events?)
+4. OBVIOUS PLAY (large cap play — name it, give target, keep brief — everyone already knows this)
+5. HIDDEN GEM (small/mid-cap most investors miss — ticker, why it benefits MORE on % basis, price target, specific catalyst)
+6. SUPPLY CHAIN PLAY (2nd/3rd order company in dependency chain, even less obvious than hidden gem)
+7. RISK (single biggest risk to this thesis)
+8. CONVICTION: [score 1-100] — include convergence bonus if multiple smart money sources aligned
 
-Spend most of your analysis on sections 4 and 5. These are where the real alpha is. Be specific: name exact tickers, current price if known, % upside target, and the specific catalyst that will move it.`;
+Spend most analysis on sections 5 and 6. Smart money signals (insider buys, congress trades, hedge fund moves) are the most powerful inputs — prioritise them. Be specific: exact tickers, price targets, % upside.`;
 
   try {
     const response = await withRetry(() => getClient().messages.create({
-      model:"claude-sonnet-4-6", max_tokens:800,
+      model:"claude-sonnet-4-6", max_tokens:350,  // was 800 — cut verbosity in half
       system:[{
         type:"text",
         text:`You are an aggressive growth investor analyst. Profile: high risk tolerance, 1-3 month horizon, looking for asymmetric upside.
@@ -809,56 +839,71 @@ async function sendTelegramAlert(item, scored, analysis, ripples) {
   const se = { bullish:"📈", bearish:"📉", neutral:"➡️" }[scored.sentiment] || "➡️";
   const conviction = extractConviction(analysis);
 
-  const regularRipples = ripples.filter(r => !r.isHiddenGem).slice(0,3);
-  const hiddenGems     = ripples.filter(r =>  r.isHiddenGem).slice(0,4);
-  const rippleText = regularRipples.length
-    ? `\n🔗 *Supply Chain:* ${regularRipples.map(r=>r.ticker).join(" · ")}`
-    : "";
-  const gemText = hiddenGems.length
-    ? `\n💎 *Hidden Gems:* ${hiddenGems.map(r=>`${r.ticker}`).join(" · ")}`
-    : "";
-  const aiReasonText = scored.aiScreen?.reasoning
-    ? `\n🧠 _${scored.aiScreen.reasoning}_`
-    : "";
-  const primaryTickersText = (scored.aiScreen?.primary_tickers||[]).length
-    ? `\n🎯 *Primary tickers:* ${scored.aiScreen.primary_tickers.join(" · ")}`
-    : "";
+  // ── Extract just the key sections from analysis ───────────────────────
+  const lines = analysis.split("\n").filter(l => l.trim());
+  const getSection = (num) => {
+    const idx = lines.findIndex(l => l.match(new RegExp(`^${num}\.`)));
+    if (idx === -1) return "";
+    // grab up to 2 lines after the header
+    return lines.slice(idx, idx+3).join(" ").replace(/^\d+\.\s*/,"").slice(0,200);
+  };
 
-  const lines = analysis.split("\n").filter(l=>l.trim()).slice(0,14);
+  const hiddenGem   = getSection(5) || getSection(4);
+  const supplyChain = getSection(6) || getSection(5);
+  const risk        = getSection(7) || getSection(6);
 
-  const msg = [
-    `${item.sourceEmoji} *${item.sourceLabel.toUpperCase()}* ${se}`,
-    `📊 *${scored.sentiment.toUpperCase()}* | Confidence: *${scored.confidence}%*${conviction?` | Conviction: *${conviction}/100*`:""}`,
-    `🕐 ${item.time}${item.ticker ? ` | $${item.ticker}` : ""}`,
+  // Hidden gems and supply chain tickers (3 max each)
+  const gems  = ripples.filter(r =>  r.isHiddenGem).slice(0,3).map(r=>r.ticker).join(" · ");
+  const chain = ripples.filter(r => !r.isHiddenGem).slice(0,3).map(r=>r.ticker).join(" · ");
+
+  // ── Build clean, scannable message ───────────────────────────────────
+  const parts = [
+    `${se} *${scored.sentiment.toUpperCase()}* — ${scored.confidence}%${conviction ? ` · ${conviction}/100` : ""} ${item.sourceEmoji}`,
+    `*${item.sourceLabel}* · ${item.time}${item.ticker ? ` · $${item.ticker}` : ""}`,
     ``,
-    `💬 _"${(item.quote||"").slice(0,180)}"_`,
-    aiReasonText,
-    primaryTickersText,
-    rippleText,
-    gemText,
+    `_"${(item.quote||"").slice(0,160)}"_`,
     ``,
-    `📋 *Analysis:*`,
-    ...lines,
-    ``,
-    item.url ? `🔗 [Source](${item.url})` : "",
-    `⚠️ _Not financial advice. Aggressive | 1-3mo horizon._`,
-  ].filter(l=>l!==undefined).join("\n");
+  ];
+
+  if (scored.convergence) {
+    parts.push(`🎯 *Convergence:* ${scored.convergence.uniqueSources.join(" + ")} all bullish`);
+    parts.push(``);
+  }
+
+  if (scored.aiScreen?.reasoning) {
+    parts.push(`💡 ${scored.aiScreen.reasoning}`);
+    parts.push(``);
+  }
+
+  if (hiddenGem)   parts.push(`💎 *Hidden gem:* ${hiddenGem}`);
+  if (supplyChain) parts.push(`🔗 *Supply chain:* ${supplyChain}`);
+  if (risk)        parts.push(`⚠️ *Risk:* ${risk}`);
+
+  parts.push(``);
+
+  if (gems)  parts.push(`💎 ${gems}`);
+  if (chain) parts.push(`🔗 ${chain}`);
+
+  if (item.url) parts.push(`\n🔗 [Source](${item.url})`);
+  parts.push(`_Not financial advice_`);
+
+  const msg = parts.filter(p => p !== undefined).join("\n");
 
   for (const chatId of CONFIG.TELEGRAM_CHAT_IDS) {
     try {
       const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ chat_id:chatId, text:msg, parse_mode:"Markdown", disable_web_page_preview:false }),
+        body:JSON.stringify({ chat_id:chatId, text:msg, parse_mode:"Markdown", disable_web_page_preview:true }),
       });
       const data = await res.json();
       if (data.ok) console.log(`📲 Telegram → ${chatId} ✅`);
       else {
-        // Fallback: send without markdown if parse error
-        console.log(`📲 Telegram markdown failed, retrying plain...`);
+        // Fallback without markdown
         await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method:"POST", headers:{"Content-Type":"application/json"},
           body:JSON.stringify({ chat_id:chatId, text:msg.replace(/[*_`\[\]]/g,""), disable_web_page_preview:true }),
         });
+        console.log(`📲 Telegram → ${chatId} ✅ (plain text fallback)`);
       }
     } catch(e) { console.error(`📲 Telegram failed:`, e.message); }
   }
@@ -909,6 +954,7 @@ async function sendGmailAlert(item, scored, analysis, ripples) {
   <div style="background:${scored.sentiment==="bullish"?"rgba(0,208,132,0.1)":"rgba(255,71,87,0.1)"};border-left:4px solid ${scored.sentiment==="bullish"?"#00d084":"#ff4757"};border-radius:8px;padding:14px 18px;margin-bottom:14px;">
     <div style="font-size:18px;font-weight:700;color:${scored.sentiment==="bullish"?"#00d084":"#ff4757"}">${se} ${scored.sentiment.toUpperCase()} — Confidence ${scored.confidence}%${conviction?` · Conviction ${conviction}/100`:""}</div>
     <div style="font-size:12px;color:#888;margin-top:3px;">${item.time} · ${item.sourceLabel}${item.ticker?` · $${item.ticker}`:""}</div>
+    ${scored.convergence?`<div style="margin-top:8px;padding:6px 10px;background:rgba(200,150,10,0.15);border-radius:6px;font-size:12px;color:#c8960a;">🎯 CONVERGENCE: ${scored.convergence.summary}</div>`:""}
   </div>
   <div style="background:rgba(255,255,255,0.03);border:1px solid #2a2a3a;border-radius:10px;padding:14px 18px;margin-bottom:14px;">
     <div style="font-size:11px;color:#556;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Signal</div>
@@ -942,6 +988,98 @@ async function sendAllAlerts(item, scored, analysis, ripples) {
   ]);
 }
 
+// ── Smart money convergence tracker ───────────────────────────────────────
+// Tracks when multiple "smart money" sources pile into the same ticker.
+// Congress + insider + hedge fund all buying = extremely high conviction.
+const convergenceMap = new Map(); // ticker -> {sources, timestamps, signals}
+
+function recordSmartMoneySignal(ticker, sourceType, sentiment, item) {
+  if (!ticker) return;
+  const key = ticker.toUpperCase();
+  if (!convergenceMap.has(key)) {
+    convergenceMap.set(key, { ticker: key, sources: [], signals: [], firstSeen: Date.now() });
+  }
+  const entry = convergenceMap.get(key);
+  // Only keep last 7 days worth of signals
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  entry.sources = entry.sources.filter(s => s.ts > cutoff);
+
+  const sourceLabel = {
+    congress:   "Congress member",
+    insider:    "Company insider",
+    smartmoney: "Hedge fund",
+    options:    "Options flow",
+  }[sourceType] || sourceType;
+
+  entry.sources.push({
+    type: sourceType, label: sourceLabel,
+    member: item.member || item.insider || item.investor || "",
+    sentiment, ts: Date.now(),
+  });
+  entry.signals.push({ sourceType, sentiment, time: new Date().toISOString() });
+}
+
+function checkConvergence(ticker) {
+  if (!ticker) return null;
+  const entry = convergenceMap.get(ticker.toUpperCase());
+  if (!entry) return null;
+
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recent = entry.sources.filter(s => s.ts > cutoff);
+  const bullish = recent.filter(s => s.sentiment === "bullish");
+  const bearish = recent.filter(s => s.sentiment === "bearish");
+
+  const uniqueBullSources = [...new Set(bullish.map(s => s.type))];
+  const uniqueBearSources = [...new Set(bearish.map(s => s.type))];
+
+  // Convergence requires at least 2 different smart money source types
+  if (uniqueBullSources.length >= 2) {
+    const bonus = uniqueBullSources.length >= 3 ? 20 : 10;
+    return {
+      direction: "bullish",
+      sources: bullish,
+      uniqueSources: uniqueBullSources,
+      convergenceBonus: bonus,
+      summary: `${uniqueBullSources.length} smart money sources bullish on ${ticker}: ${bullish.map(s=>`${s.label}${s.member?" ("+s.member+")":""}`).join(", ")}`,
+    };
+  }
+  if (uniqueBearSources.length >= 2) {
+    return {
+      direction: "bearish",
+      sources: bearish,
+      uniqueSources: uniqueBearSources,
+      convergenceBonus: 10,
+      summary: `${uniqueBearSources.length} smart money sources bearish on ${ticker}: ${bearish.map(s=>`${s.label}${s.member?" ("+s.member+")":""}`).join(", ")}`,
+    };
+  }
+  return null;
+}
+
+// ── Smarter analysis additions ─────────────────────────────────────────────
+// Extra context builders used in getDeepAnalysis
+
+function buildSmartMoneyContext(item) {
+  const lines = [];
+
+  if (item.signalType === "congress") {
+    lines.push(`CONGRESS TRADE: ${item.member||"Unknown"} (${item.party||"?"}) ${item.transaction||"traded"} ${item.ticker||""} worth ${item.amount||"unknown amount"}.`);
+    if (item.committee) lines.push(`Committee assignment: ${item.committee} — potential insider knowledge angle.`);
+    lines.push(`Historical context: Congress members outperform S&P 500 by avg 6-12% annually. Pelosi portfolio up 18% in 2025.`);
+  }
+
+  if (item.signalType === "insider") {
+    lines.push(`INSIDER BUY: ${item.insider||"Executive"} (${item.role||"insider"}) purchased ${item.shares||""} shares of ${item.ticker||""} worth ${item.value||"unknown"}.`);
+    lines.push(`Insider buys are one of the strongest bullish signals — executives rarely buy their own stock unless they expect it to rise.`);
+  }
+
+  if (item.signalType === "smartmoney") {
+    lines.push(`SMART MONEY: ${item.investor||"Hedge fund"} (${item.fund||""}) ${item.action||"changed position"} in ${item.ticker||""} worth ${item.value||"unknown"}.`);
+    lines.push(`Conviction level: ${item.conviction||"unknown"}. 13F filings are 45-day lagged — price may have already moved, look for entry on dips.`);
+  }
+
+  return lines.join(" ");
+}
+
 // ── AI Pre-screener ───────────────────────────────────────────────────────
 // Replaces keyword gating. Haiku reads the statement and returns a structured
 // assessment — catches things keywords never could (Dell example, negations,
@@ -951,7 +1089,7 @@ async function aiPreScreen(item) {
   try {
     const response = await withRetry(() => getClient().messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 400,
+      max_tokens: 200,  // was 400 — JSON response only needs ~150 tokens
       system: [{
         type: "text",
         cache_control: { type: "ephemeral" },
@@ -990,7 +1128,13 @@ CRITICAL rules:
   Networking signal → hidden gems: FN (Fabrinet makes the components), SMTC (analog chips), CALX (broadband AI)
   Defense signal → hidden gems: KTOS (drone AI), RCAT (military drones), CACI (gov AI analytics)
 - ripple_tickers: 2nd/3rd order companies affected (suppliers, customers, competitors)
-- Always prioritise hidden gems — they have more upside than obvious picks`
+- Always prioritise hidden gems — they have more upside than obvious picks
+
+SMART MONEY SOURCE RULES:
+- congress trade: confidence boost +15 if large purchase (>$250k), flag if committee assignment relates to sector
+- insider buy (Form 4): confidence boost +20 — this is the STRONGEST signal, execs rarely buy unless bullish
+- hedge fund 13F: confidence boost +10 but note 45-day lag, look for entry on dips post-disclosure
+- Options sweep: confidence boost +12 if large notional value, implies institutional positioning`
       }],
       messages: [{ role: "user", content: `Source: ${item.sourceLabel} (${item.signalType||"news"})\nText: ${fullText.slice(0,400)}` }],
     }));
@@ -1110,10 +1254,17 @@ async function poll() {
       console.log(`     "${key.slice(0,45)}…"`);
       console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
 
-      // ── Step 2: AI pre-screen (Haiku, ~$0.001 per item) ─────────────────
-      // Always runs — catches what keywords miss (Dell, negations, unknown cos)
-      console.log(`     🧠 AI pre-screening...`);
-      const aiScreen = await aiPreScreen(item);
+      // ── Step 2: AI pre-screen — skip if keyword score is 0 AND source is
+      // low-priority (reddit/options) to avoid wasting tokens on pure noise
+      const lowPriority = ["reddit"].includes(item.signalType||"");
+      const skipScreen  = keywordScored.confidence === 0 && lowPriority;
+      let aiScreen = null;
+      if (!skipScreen) {
+        console.log(`     🧠 AI pre-screening...`);
+        aiScreen = await aiPreScreen(item);
+      } else {
+        console.log(`     ⏭️  Skipping AI pre-screen (low priority + no keywords)`);
+      }
       const scored   = mergeScores(keywordScored, aiScreen);
 
       if (aiScreen) {
@@ -1150,8 +1301,28 @@ async function poll() {
         item.allTickers = aiScreen.primary_tickers;
       }
 
+      // Record smart money signals for convergence tracking
+      const smartMoneyTypes = ["congress","insider","smartmoney","options"];
+      if (smartMoneyTypes.includes(item.signalType)) {
+        const tickers = [...(aiScreen?.primary_tickers||[]), item.ticker].filter(Boolean);
+        for (const t of tickers) {
+          recordSmartMoneySignal(t, item.signalType, scored.sentiment, item);
+        }
+      }
+
+      // Check convergence for triggered tickers
+      const convergence = item.ticker ? checkConvergence(item.ticker) : null;
+      if (convergence) {
+        console.log(`     🎯 CONVERGENCE: ${convergence.summary}`);
+        scored.confidence = Math.min(scored.confidence + convergence.convergenceBonus, 95);
+        scored.convergence = convergence;
+      }
+
+      // Build smart money context for deep analysis
+      item.smartMoneyContext = buildSmartMoneyContext(item);
+
       // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
-      const highConfidence = scored.confidence >= 75;
+      const highConfidence = scored.confidence >= 80;  // only fetch peers for very high confidence
       console.log(`     🔍 Fetching context... ${highConfidence ? "(full)" : "(market only — confidence <75%)"}`);
       const [articleText, marketCtx, peerData] = await Promise.allSettled([
         fetchArticleText(item.url),
@@ -1194,7 +1365,9 @@ async function main() {
   console.log(`📧 Gmail  → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
   console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length+" recipient(s)" : "disabled"}`);
   console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}% | Poll: every ${CONFIG.POLL_INTERVAL_MIN}min`);
-  console.log(`📡 Sources: ${SIGNAL_SOURCES.map(s=>s.emoji+s.label).join(" | ")}`);
+  console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
+  SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
+  console.log(`🎯 Convergence engine: tracks when Congress + insider + hedge fund align on same ticker`);
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   startHealthServer();
