@@ -552,17 +552,19 @@ If nothing found return: []`
   },
   {
     id:"reddit", label:"Reddit sentiment", emoji:"💬",
-    searchQuery:"wallstreetbets stocks trending most mentioned discussed bullish bearish today 2025",
-    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for stocks trending on Reddit WallStreetBets r/stocks today and return up to 4 items:
-[{"source":"r/wallstreetbets","time":"2 hours ago","headline":"NVDA most mentioned stock today","quote":"brief description of community sentiment max 150 chars","url":"","signalType":"reddit","ticker":"NVDA","sentiment":"bullish","mention_count":"high"}]
-If nothing found return: []`
+    searchQuery:"wallstreetbets top stocks mentioned trending today 2025",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for top stocks being discussed on Reddit WallStreetBets today. Return max 3 items, keep quotes under 80 chars:
+[{"source":"WSB","time":"today","headline":"NVDA bullish","quote":"community buying the dip","url":"","signalType":"reddit","ticker":"NVDA","sentiment":"bullish"}]
+Empty result: []`
   },
   {
-    id:"options", label:"Unusual options activity", emoji:"🐳",
-    searchQuery:"unusual options activity large call sweep institutional buying today stocks 2025",
-    systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for unusual options activity, large call sweeps, or institutional options buying today and return up to 3 items:
-[{"source":"Options Flow","time":"1 hour ago","headline":"Large call sweep on NVDA $900 strike","quote":"brief description max 150 chars","url":"","signalType":"options","ticker":"NVDA","type":"call","sentiment":"bullish"}]
-If nothing found return: []`
+    id:"analysts", label:"Analyst upgrades & price targets", emoji:"🎯",
+    searchQuery:"analyst upgrade downgrade price target raised lowered today 2025 AI tech stocks",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for latest analyst upgrades, downgrades, or price target changes for stocks today. Return max 3 items, quotes under 80 chars:
+[{"source":"Goldman Sachs","time":"today","headline":"Goldman upgrades NVDA to Buy","quote":"raises target to $1200 from $950","url":"","signalType":"analyst","ticker":"NVDA","action":"upgrade","target":"$1200","from_target":"$950","rating":"Buy"}]
+Empty result: []`
   },
   {
     id:"congress", label:"Congress trades", emoji:"🏛️",
@@ -613,7 +615,7 @@ async function withRetry(fn, retries=3, delayMs=15000) {
 
 async function fetchSourceStatements(source) {
   const response = await withRetry(() => getClient().messages.create({
-    model:"claude-haiku-4-5", max_tokens:500,  // Haiku = 20x cheaper than Sonnet for fetching
+    model:"claude-haiku-4-5", max_tokens:700,  // 700 enough for 3-4 JSON items without truncation
     tools:[{ type:"web_search_20250305", name:"web_search" }],
     system:[{
       type:"text",
@@ -1122,7 +1124,7 @@ Analyse the news item and return ONLY a raw JSON object (no markdown, no preambl
   "hidden_gem_tickers": ["TICK3","TICK4"],
   "ripple_tickers": ["TICK5","TICK6"],
   "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","nuclear","macro"],
-  "signal_type_boost": "earnings"|"presidential_endorsement"|"policy"|"options_flow"|"guidance"|"contract"|"regulation"|"none",
+  "signal_type_boost": "earnings"|"presidential_endorsement"|"policy"|"analyst_upgrade"|"analyst_downgrade"|"guidance"|"contract"|"regulation"|"none",
   "negated": true|false
 }
 
@@ -1206,6 +1208,8 @@ function mergeScores(keywordScored, aiScreen) {
     earnings: 10,
     guidance: 12,
     contract: 8,
+    analyst_upgrade: 9,
+    analyst_downgrade: 9,
     options_flow: 8,
     policy: 6,
     regulation: 6,
