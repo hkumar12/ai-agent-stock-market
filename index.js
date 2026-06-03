@@ -593,6 +593,38 @@ Return JSON array only:
 [{"source":"13F Filing","time":"2 days ago","headline":"Buffett adds Apple","quote":"detail max 100 chars","url":"","signalType":"smartmoney","ticker":"AAPL","investor":"Warren Buffett","fund":"Berkshire","action":"added","value":"$2B"}]
 Empty result: []`
   },
+  {
+    id:"fda", label:"FDA calendar & biotech", emoji:"💊",
+    searchQuery:"FDA PDUFA drug approval rejection Phase 3 trial results biotech today week 2025",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for FDA drug approvals, rejections, or Phase 3 trial results this week. Return max 3 items, quotes under 80 chars:
+[{"source":"FDA","time":"today","headline":"FDA approves Moderna drug","quote":"detail max 80 chars","url":"","signalType":"fda","ticker":"MRNA","action":"approved","sentiment":"bullish"}]
+Empty result: []`
+  },
+  {
+    id:"shortsqueeze", label:"Short squeeze candidates", emoji:"🚀",
+    searchQuery:"high short interest stocks squeeze catalyst bullish news 2025 most shorted",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for heavily shorted stocks with a fresh bullish catalyst today. Return max 3 items, quotes under 80 chars:
+[{"source":"Short Interest","time":"today","headline":"GME 40% short float beats earnings","quote":"detail max 80 chars","url":"","signalType":"shortsqueeze","ticker":"GME","short_float":"40%","sentiment":"bullish"}]
+Empty result: []`
+  },
+  {
+    id:"govcontracts", label:"Govt contract awards", emoji:"📜",
+    searchQuery:"government contract awarded DoD Pentagon AI technology defense billion million 2025",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for major US government DoD contract awards for tech AI defense companies today. Return max 3 items, quotes under 80 chars:
+[{"source":"DoD","time":"today","headline":"Palantir wins $500M Army AI contract","quote":"detail max 80 chars","url":"","signalType":"govcontract","ticker":"PLTR","value":"$500M","sentiment":"bullish"}]
+Empty result: []`
+  },
+  {
+    id:"jobpostings", label:"Job posting intelligence", emoji:"📋",
+    searchQuery:"tech AI company massive hiring surge layoffs job cuts expansion announced 2025",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for significant hiring surges or mass layoffs at major tech/AI companies today. Return max 3 items, quotes under 80 chars:
+[{"source":"LinkedIn","time":"today","headline":"Nvidia hiring 2000 AI engineers","quote":"detail max 80 chars","url":"","signalType":"jobpostings","ticker":"NVDA","direction":"hiring","sentiment":"bullish"}]
+Empty result: []`
+  },
 ];
 
 // ── Anthropic client ───────────────────────────────────────────────────────
@@ -627,8 +659,13 @@ async function fetchSourceStatements(source) {
   trackCacheUsage(response);
   const text = response.content.find(c=>c.type==="text")?.text || "";
   if (!text) { console.log("     ⚠️  No text block"); return []; }
-  // Pre-clean: strip markdown fences and prose preamble before parsing
-  const preClean = text.replace(/```json/gi,"").replace(/```/g,"").replace(/^[^\[{]*/,"").trim();
+  // Pre-clean: strip markdown fences, citation tags, and prose preamble
+  const preClean = text
+    .replace(/```json/gi,"").replace(/```/g,"")          // strip code fences
+    .replace(/<cite[^>]*>/gi,"").replace(/<\/cite>/gi,"") // strip <cite> tags
+    .replace(/\\/g,"")                                   // strip stray backslashes
+    .replace(/^[^\[{]*/,"")                               // strip prose before first [ or {
+    .trim();
   const parseTarget = preClean || text;
   console.log("     📝 Raw (first 200): " + text.slice(0,200));
   try {
@@ -638,7 +675,7 @@ async function fetchSourceStatements(source) {
       const items = JSON.parse(match[0]);
       if (Array.isArray(items) && items.length > 0) {
         console.log("     ✅ Parsed " + items.length + " item(s)");
-        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+        return items.map(i=>sanitizeItem({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
       }
       if (Array.isArray(items) && items.length === 0) {
         console.log("     ✅ Empty array — no new items");
@@ -652,7 +689,7 @@ async function fetchSourceStatements(source) {
       const items = JSON.parse(match2[0]);
       if (Array.isArray(items)) {
         console.log("     ✅ Parsed " + items.length + " item(s) via strategy 2");
-        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+        return items.map(i=>sanitizeItem({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
       }
     }
     // Strategy 3: ask Haiku to reformat
@@ -669,7 +706,7 @@ async function fetchSourceStatements(source) {
       const items = JSON.parse(match3[0]);
       if (Array.isArray(items)) {
         console.log("     ✅ Parsed " + items.length + " item(s) via Haiku reformat");
-        return items.map(i=>({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
+        return items.map(i=>sanitizeItem({...i, sourceId:source.id, sourceLabel:source.label, sourceEmoji:source.emoji}));
       }
     }
     console.log("     ⚠️  All parse strategies failed");
@@ -1096,6 +1133,22 @@ function buildSmartMoneyContext(item) {
     lines.push(`Conviction level: ${item.conviction||"unknown"}. 13F filings are 45-day lagged — price may have already moved, look for entry on dips.`);
   }
 
+  if (item.signalType === "fda") {
+    lines.push(`FDA ${item.action||"decision"} on ${item.ticker||""}: ${item.signalType==="fda"&&item.action==="approved"?"Binary approval = stock typically moves 30-80% on approval day":"Rejection = stock typically drops 50-70% on rejection day"}.`);
+  }
+
+  if (item.signalType === "shortsqueeze") {
+    lines.push(`SHORT SQUEEZE SETUP: ${item.ticker||""} has ${item.short_float||"high"} short float with fresh catalyst. Forced covering can cause explosive vertical moves in hours.`);
+  }
+
+  if (item.signalType === "govcontract") {
+    lines.push(`GOVT CONTRACT: ${item.ticker||""} awarded ${item.value||"significant"} contract. Government contracts are sticky recurring revenue — market often underprices at announcement.`);
+  }
+
+  if (item.signalType === "jobpostings") {
+    lines.push(`JOB POSTING SIGNAL: ${item.ticker||""} showing ${item.direction||"hiring"} trend. This alternative data leads earnings by 2-3 quarters — most investors won't see this until the next earnings call.`);
+  }
+
   return lines.join(" ");
 }
 
@@ -1124,7 +1177,7 @@ Analyse the news item and return ONLY a raw JSON object (no markdown, no preambl
   "hidden_gem_tickers": ["TICK3","TICK4"],
   "ripple_tickers": ["TICK5","TICK6"],
   "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","nuclear","macro"],
-  "signal_type_boost": "earnings"|"presidential_endorsement"|"policy"|"analyst_upgrade"|"analyst_downgrade"|"guidance"|"contract"|"regulation"|"none",
+  "signal_type_boost": "earnings"|"presidential_endorsement"|"fda_approval"|"fda_rejection"|"short_squeeze"|"govt_contract"|"job_surge"|"policy"|"analyst_upgrade"|"analyst_downgrade"|"guidance"|"contract"|"regulation"|"none",
   "negated": true|false
 }
 
@@ -1205,15 +1258,20 @@ function mergeScores(keywordScored, aiScreen) {
   // Signal type boost to confidence
   const boosts = {
     presidential_endorsement: 15,
-    earnings: 10,
-    guidance: 12,
-    contract: 8,
+    fda_approval:   14,  // binary event, very high impact
+    fda_rejection:  14,
+    earnings:       10,
+    guidance:       12,
+    govt_contract:  10,  // direct revenue, often missed
+    short_squeeze:  10,  // catalyst + high short = explosive
     analyst_upgrade: 9,
     analyst_downgrade: 9,
-    options_flow: 8,
-    policy: 6,
-    regulation: 6,
-    none: 0,
+    job_surge:       7,  // leading indicator, 2-3 quarter lead
+    contract:        8,
+    options_flow:    8,
+    policy:          6,
+    regulation:      6,
+    none:            0,
   };
   const boost = boosts[aiScreen.signal_type_boost] || 0;
   const finalConfidence = Math.min(aiScreen.confidence + boost, 95);
@@ -1242,177 +1300,7 @@ let lastPollTime = null;
 let nextPollTime = null;
 const cacheStats = { hits: 0, writes: 0, tokensSaved: 0 };
 
-function trackCacheUsage(response) {
-  if (!response?.usage) return;
-  const hit   = response.usage.cache_read_input_tokens   || 0;
-  const write = response.usage.cache_creation_input_tokens || 0;
-  if (hit)   { cacheStats.hits++;   cacheStats.tokensSaved += hit; }
-  if (write) { cacheStats.writes++; }
-  if (hit || write) {
-    console.log(`     💾 Cache: ${hit ? "HIT "+hit+" tokens saved (90% off)" : ""} ${write ? "WRITE "+write+" tokens" : ""}`);
-  }
-}
-
-async function poll() {
-  console.log(`\n[${new Date().toLocaleTimeString()}] 🔄 Polling ${SIGNAL_SOURCES.length} sources...`);
-
-  for (const source of SIGNAL_SOURCES) {
-    console.log(`  ${source.emoji} Fetching ${source.label}...`);
-    let items = [];
-    try { items = await fetchSourceStatements(source); }
-    catch(err) { console.error(`  ❌ ${source.label} failed:`, err.message); await sleep(25000); continue; }
-    console.log(`  → ${items.length} item(s)`);
-
-    for (const item of items) {
-      const key = (item.quote||item.headline||"").slice(0,50);
-      if (seenQuotes.has(key)) { console.log(`     ↩  Already seen`); continue; }
-      seenQuotes.add(key);
-      if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
-
-      // ── Step 1: fast keyword pre-score (cheap, no API call) ──────────────
-      const keywordScored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
-      const b = keywordScored.breakdown;
-      console.log(`     "${key.slice(0,45)}…"`);
-      console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
-
-      // ── Step 2: AI pre-screen — skip if keyword score is 0 AND source is
-      // low-priority (reddit/options) to avoid wasting tokens on pure noise
-      const lowPriority = ["reddit"].includes(item.signalType||"");
-      const skipScreen  = keywordScored.confidence === 0 && lowPriority;
-      let aiScreen = null;
-      if (!skipScreen) {
-        console.log(`     🧠 AI pre-screening...`);
-        aiScreen = await aiPreScreen(item);
-      } else {
-        console.log(`     ⏭️  Skipping AI pre-screen (low priority + no keywords)`);
-      }
-      const scored   = mergeScores(keywordScored, aiScreen);
-
-      if (aiScreen) {
-        console.log(`     → AI score: ${aiScreen.sentiment.toUpperCase()} ${aiScreen.confidence}% | ${aiScreen.reasoning}`);
-        console.log(`     → Signal type: ${aiScreen.signal_type_boost} | Negated: ${aiScreen.negated} | Tickers: ${(aiScreen.primary_tickers||[]).join(", ")}`);
-        console.log(`     → FINAL confidence: ${scored.confidence}% (AI ${aiScreen.confidence}% + boost ${scored.breakdown.signalTypeBoost}pts)`);
-      }
-
-      if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
-        console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
-      }
-      if (aiScreen?.is_market_moving === false) {
-        console.log(`     ↩  AI says not market-moving, skipping`); continue;
-      }
-      if (aiScreen?.negated) {
-        console.log(`     ↩  AI detected negation — signal is ${scored.sentiment}`);
-        // Still continue if bearish signal above threshold
-        if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) continue;
-      }
-
-      const topSectors = Object.entries(scored.signals)
-        .sort((a,b)=>Math.abs(b[1].score)-Math.abs(a[1].score)).slice(0,3).map(([s])=>s);
-
-      // Supply chain ripples: hardcoded map + AI-detected dynamic ripples
-      const ripples = [
-        ...findSupplyChainRipple(scored.signals),
-        ...(scored.dynamicRipples||[]),
-      ].filter((r,i,arr) => arr.findIndex(x=>x.ticker===r.ticker)===i).slice(0,8);
-      if (ripples.length) console.log(`     🔗 Ripple plays: ${ripples.map(r=>r.ticker).join(", ")}`);
-
-      // Inject AI-found primary tickers into item for alerts
-      if (aiScreen?.primary_tickers?.length) {
-        item.ticker = item.ticker || aiScreen.primary_tickers[0];
-        item.allTickers = aiScreen.primary_tickers;
-      }
-
-      // Record smart money signals for convergence tracking
-      const smartMoneyTypes = ["congress","insider","smartmoney","options"];
-      if (smartMoneyTypes.includes(item.signalType)) {
-        const tickers = [...(aiScreen?.primary_tickers||[]), item.ticker].filter(Boolean);
-        for (const t of tickers) {
-          recordSmartMoneySignal(t, item.signalType, scored.sentiment, item);
-        }
-      }
-
-      // Check convergence for triggered tickers
-      const convergence = item.ticker ? checkConvergence(item.ticker) : null;
-      if (convergence) {
-        console.log(`     🎯 CONVERGENCE: ${convergence.summary}`);
-        scored.confidence = Math.min(scored.confidence + convergence.convergenceBonus, 95);
-        scored.convergence = convergence;
-      }
-
-      // Build smart money context for deep analysis
-      item.smartMoneyContext = buildSmartMoneyContext(item);
-
-      // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
-      const highConfidence = scored.confidence >= 80;  // only fetch peers for very high confidence
-      console.log(`     🔍 Fetching context... ${highConfidence ? "(full)" : "(market only — confidence <75%)"}`);
-      const [articleText, marketCtx, peerData] = await Promise.allSettled([
-        fetchArticleText(item.url),
-        fetchMarketContext(topSectors),
-        highConfidence ? fetchPeerComparison(topSectors) : Promise.resolve(null),
-      ]).then(results => results.map(r => r.status==="fulfilled" ? r.value : null));
-
-      console.log(`     🤖 Running deep analysis...`);
-      const analysis = await getDeepAnalysis(item, scored, articleText, marketCtx, peerData, ripples);
-      const conviction = extractConviction(analysis);
-      console.log(`     💡 Conviction: ${conviction??""}/100`);
-
-      await sendAllAlerts(item, scored, analysis, ripples);
-      await sleep(5000);
-    }
-
-    await sleep(25000); // rate limit buffer between sources
-  }
-
-  lastPollTime = new Date().toISOString();
-  console.log(`  💾 Session cache stats: ${cacheStats.hits} hits | ${cacheStats.tokensSaved.toLocaleString()} tokens saved | ${cacheStats.writes} writes`);
-}
-
-function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
-
-function startHealthServer() {
-  const http = require("http");
-  const port = process.env.PORT || 3000;
-  http.createServer((req,res) => {
-    res.writeHead(200,{"Content-Type":"application/json"});
-    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", profile:"aggressive|1-3mo", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, layers:Object.keys(LAYERS).length, lastPoll:lastPollTime, nextPoll:nextPollTime, cacheHits:cacheStats.hits, tokensSaved:cacheStats.tokensSaved, cacheWrites:cacheStats.writes }));
-  }).listen(port, ()=>console.log(`🌐 Health check on port ${port}`));
-}
-
-async function main() {
-  validateConfig();
-  console.log("🤖 AI Ecosystem Signal Engine — Pro Investor Edition");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`👤 Profile: ${INVESTOR_PROFILE.risk} | ${INVESTOR_PROFILE.horizon}`);
-  console.log(`📧 Gmail  → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
-  console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length+" recipient(s)" : "disabled"}`);
-  console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}% | Poll: every ${CONFIG.POLL_INTERVAL_MIN}min`);
-  console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
-  SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
-  console.log(`🎯 Convergence engine: tracks when Congress + insider + hedge fund align on same ticker`);
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-  startHealthServer();
-
-  // Use a setTimeout chain instead of setInterval — guarantees the next poll
-  // only starts AFTER the current one fully completes, preventing overlap.
-  // With 9 sources x 25s gaps a poll can easily exceed a short interval.
-  async function scheduledPoll() {
-    const pollStart = Date.now();
-    await poll();
-    const pollDurationMs = Date.now() - pollStart;
-    const intervalMs     = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
-
-    // Wait the configured interval AFTER poll finishes.
-    // If poll itself ran longer, wait at least 30s before next cycle.
-    const waitMs = Math.max(intervalMs - pollDurationMs, 30000);
-    nextPollTime = new Date(Date.now() + waitMs).toISOString();
-
-    const waitMin = Math.round(waitMs / 60000 * 10) / 10;
-    console.log(`\n⏱  Poll took ${Math.round(pollDurationMs/1000)}s. Next poll in ${waitMin}min at ${new Date(nextPollTime).toLocaleTimeString()}`);
-    setTimeout(scheduledPoll, waitMs);
-  }
-
-  scheduledPoll();
-}
-
-main().catch(err => { console.error("\ud83d\udca5 Fatal:", err); process.exit(1); });
+// Strip any XML/cite tags and control chars from parsed items
+function sanitizeItem(item) {
+  const strip = s => typeof s === "string"
+    ? s.replace(/<[^>]+>/g,"").replace(/[
