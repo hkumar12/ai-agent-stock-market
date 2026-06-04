@@ -1303,4 +1303,189 @@ const cacheStats = { hits: 0, writes: 0, tokensSaved: 0 };
 // Strip any XML/cite tags and control chars from parsed items
 function sanitizeItem(item) {
   const strip = s => typeof s === "string"
-    ? s.replace(/<[^>]+>/g,"").replace(/[
+    ? s.replace(/<[^>]+>/g,"").replace(/[\x00-\x1F]/g," ").replace(/\s+/g," ").trim()
+    : s;
+  return {
+    ...item,
+    headline: strip(item.headline),
+    quote:    strip(item.quote),
+    source:   strip(item.source),
+    time:     strip(item.time),
+    url:      strip(item.url),
+  };
+}
+
+function trackCacheUsage(response) {
+  if (!response?.usage) return;
+  const hit   = response.usage.cache_read_input_tokens   || 0;
+  const write = response.usage.cache_creation_input_tokens || 0;
+  if (hit)   { cacheStats.hits++;   cacheStats.tokensSaved += hit; }
+  if (write) { cacheStats.writes++; }
+  if (hit || write) {
+    console.log(`     💾 Cache: ${hit ? "HIT "+hit+" tokens saved (90% off)" : ""} ${write ? "WRITE "+write+" tokens" : ""}`);
+  }
+}
+
+async function poll() {
+  console.log(`\n[${new Date().toLocaleTimeString()}] 🔄 Polling ${SIGNAL_SOURCES.length} sources...`);
+
+  for (const source of SIGNAL_SOURCES) {
+    console.log(`  ${source.emoji} Fetching ${source.label}...`);
+    let items = [];
+    try { items = await fetchSourceStatements(source); }
+    catch(err) { console.error(`  ❌ ${source.label} failed:`, err.message); await sleep(25000); continue; }
+    console.log(`  → ${items.length} item(s)`);
+
+    for (const item of items) {
+      const key = (item.quote||item.headline||"").slice(0,50);
+      if (seenQuotes.has(key)) { console.log(`     ↩  Already seen`); continue; }
+      seenQuotes.add(key);
+      if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
+
+      // ── Step 1: fast keyword pre-score (cheap, no API call) ──────────────
+      const keywordScored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
+      const b = keywordScored.breakdown;
+      console.log(`     "${key.slice(0,45)}…"`);
+      console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
+
+      // ── Step 2: AI pre-screen — skip if keyword score is 0 AND source is
+      // low-priority (reddit/options) to avoid wasting tokens on pure noise
+      const lowPriority = ["reddit"].includes(item.signalType||"");
+      const skipScreen  = keywordScored.confidence === 0 && lowPriority;
+      let aiScreen = null;
+      if (!skipScreen) {
+        console.log(`     🧠 AI pre-screening...`);
+        aiScreen = await aiPreScreen(item);
+      } else {
+        console.log(`     ⏭️  Skipping AI pre-screen (low priority + no keywords)`);
+      }
+      const scored   = mergeScores(keywordScored, aiScreen);
+
+      if (aiScreen) {
+        console.log(`     → AI score: ${aiScreen.sentiment.toUpperCase()} ${aiScreen.confidence}% | ${aiScreen.reasoning}`);
+        console.log(`     → Signal type: ${aiScreen.signal_type_boost} | Negated: ${aiScreen.negated} | Tickers: ${(aiScreen.primary_tickers||[]).join(", ")}`);
+        console.log(`     → FINAL confidence: ${scored.confidence}% (AI ${aiScreen.confidence}% + boost ${scored.breakdown.signalTypeBoost}pts)`);
+      }
+
+      if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
+        console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
+      }
+      if (aiScreen?.is_market_moving === false) {
+        console.log(`     ↩  AI says not market-moving, skipping`); continue;
+      }
+      if (aiScreen?.negated) {
+        console.log(`     ↩  AI detected negation — signal is ${scored.sentiment}`);
+        // Still continue if bearish signal above threshold
+        if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) continue;
+      }
+
+      const topSectors = Object.entries(scored.signals)
+        .sort((a,b)=>Math.abs(b[1].score)-Math.abs(a[1].score)).slice(0,3).map(([s])=>s);
+
+      // Supply chain ripples: hardcoded map + AI-detected dynamic ripples
+      const ripples = [
+        ...findSupplyChainRipple(scored.signals),
+        ...(scored.dynamicRipples||[]),
+      ].filter((r,i,arr) => arr.findIndex(x=>x.ticker===r.ticker)===i).slice(0,8);
+      if (ripples.length) console.log(`     🔗 Ripple plays: ${ripples.map(r=>r.ticker).join(", ")}`);
+
+      // Inject AI-found primary tickers into item for alerts
+      if (aiScreen?.primary_tickers?.length) {
+        item.ticker = item.ticker || aiScreen.primary_tickers[0];
+        item.allTickers = aiScreen.primary_tickers;
+      }
+
+      // Record smart money signals for convergence tracking
+      const smartMoneyTypes = ["congress","insider","smartmoney","options","govcontracts","fda","shortsqueeze"];
+      if (smartMoneyTypes.includes(item.signalType)) {
+        const tickers = [...(aiScreen?.primary_tickers||[]), item.ticker].filter(Boolean);
+        for (const t of tickers) {
+          recordSmartMoneySignal(t, item.signalType, scored.sentiment, item);
+        }
+      }
+
+      // Check convergence for triggered tickers
+      const convergence = item.ticker ? checkConvergence(item.ticker) : null;
+      if (convergence) {
+        console.log(`     🎯 CONVERGENCE: ${convergence.summary}`);
+        scored.confidence = Math.min(scored.confidence + convergence.convergenceBonus, 95);
+        scored.convergence = convergence;
+      }
+
+      // Build smart money context for deep analysis
+      item.smartMoneyContext = buildSmartMoneyContext(item);
+
+      // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
+      const highConfidence = scored.confidence >= 80;  // only fetch peers for very high confidence
+      console.log(`     🔍 Fetching context... ${highConfidence ? "(full)" : "(market only — confidence <75%)"}`);
+      const [articleText, marketCtx, peerData] = await Promise.allSettled([
+        fetchArticleText(item.url),
+        fetchMarketContext(topSectors),
+        highConfidence ? fetchPeerComparison(topSectors) : Promise.resolve(null),
+      ]).then(results => results.map(r => r.status==="fulfilled" ? r.value : null));
+
+      console.log(`     🤖 Running deep analysis...`);
+      const analysis = await getDeepAnalysis(item, scored, articleText, marketCtx, peerData, ripples);
+      const conviction = extractConviction(analysis);
+      console.log(`     💡 Conviction: ${conviction??""}/100`);
+
+      await sendAllAlerts(item, scored, analysis, ripples);
+      await sleep(5000);
+    }
+
+    await sleep(25000); // rate limit buffer between sources
+  }
+
+  lastPollTime = new Date().toISOString();
+  console.log(`  💾 Session cache stats: ${cacheStats.hits} hits | ${cacheStats.tokensSaved.toLocaleString()} tokens saved | ${cacheStats.writes} writes`);
+}
+
+function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+
+function startHealthServer() {
+  const http = require("http");
+  const port = process.env.PORT || 3000;
+  http.createServer((req,res) => {
+    res.writeHead(200,{"Content-Type":"application/json"});
+    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", profile:"aggressive|1-3mo", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, layers:Object.keys(LAYERS).length, lastPoll:lastPollTime, nextPoll:nextPollTime, cacheHits:cacheStats.hits, tokensSaved:cacheStats.tokensSaved, cacheWrites:cacheStats.writes }));
+  }).listen(port, ()=>console.log(`🌐 Health check on port ${port}`));
+}
+
+async function main() {
+  validateConfig();
+  console.log("🤖 AI Ecosystem Signal Engine — Pro Investor Edition");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`👤 Profile: ${INVESTOR_PROFILE.risk} | ${INVESTOR_PROFILE.horizon}`);
+  console.log(`📧 Gmail  → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
+  console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length+" recipient(s)" : "disabled"}`);
+  console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}% | Poll: every ${CONFIG.POLL_INTERVAL_MIN}min`);
+  console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
+  SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
+  console.log(`🎯 Convergence engine: tracks when Congress + insider + hedge fund align on same ticker`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+  startHealthServer();
+
+  // Use a setTimeout chain instead of setInterval — guarantees the next poll
+  // only starts AFTER the current one fully completes, preventing overlap.
+  // With 9 sources x 25s gaps a poll can easily exceed a short interval.
+  async function scheduledPoll() {
+    const pollStart = Date.now();
+    await poll();
+    const pollDurationMs = Date.now() - pollStart;
+    const intervalMs     = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
+
+    // Wait the configured interval AFTER poll finishes.
+    // If poll itself ran longer, wait at least 30s before next cycle.
+    const waitMs = Math.max(intervalMs - pollDurationMs, 30000);
+    nextPollTime = new Date(Date.now() + waitMs).toISOString();
+
+    const waitMin = Math.round(waitMs / 60000 * 10) / 10;
+    console.log(`\n⏱  Poll took ${Math.round(pollDurationMs/1000)}s. Next poll in ${waitMin}min at ${new Date(nextPollTime).toLocaleTimeString()}`);
+    setTimeout(scheduledPoll, waitMs);
+  }
+
+  scheduledPoll();
+}
+
+main().catch(err => { console.error("\ud83d\udca5 Fatal:", err); process.exit(1); });
