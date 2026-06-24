@@ -43,12 +43,45 @@ const INVESTOR_PROFILE = {
   style:   "high growth, comfortable with volatility, looking for asymmetric upside",
 };
 
+// ── Job seeker profile ─────────────────────────────────────────────────────
+const JOB_PROFILE = {
+  name:         "Harsh Kumar",
+  title:        "Staff Software Engineer",
+  targetLevels: ["Staff","Principal","Senior Staff","Distinguished","L6","L7","E6","E7","IC5","IC6"],
+  locations:    ["Seattle","Bellevue","Redmond","Kirkland","Remote"],
+  minComp:      400000,
+  visa:         "H-1B — requires sponsorship",
+  skills:       ["distributed systems","backend systems","microservices","event-driven","Temporal","DynamoDB","Aurora","AWS","platform engineering","ad-tech","advertising","high-throughput","low-latency","Java","Python","CI/CD","Kafka"],
+  domains:      ["advertising technology","e-commerce","cloud infrastructure","platform engineering","fulfillment","data platforms"],
+  experience:   ["Microsoft Staff SWE","Amazon SDE2 9yrs","Coupang Staff SWE"],
+  education:    "MS Computer Science Arizona State University",
+  queries: [
+    "Staff Software Engineer distributed systems Seattle remote H1B sponsorship 2026",
+    "Principal Engineer backend platform Seattle remote 400k+ H1B sponsorship 2026",
+    "Staff Engineer ad tech advertising distributed systems remote Seattle sponsorship 2026",
+    "L6 L7 software engineer backend AWS DynamoDB Seattle remote 2026 sponsorship",
+    "Staff Principal engineer event-driven microservices remote Seattle H1B 2026",
+  ],
+};
+
 function validateConfig() {
   if (!CONFIG.ANTHROPIC_API_KEY) { console.error("❌ Missing ANTHROPIC_API_KEY"); process.exit(1); }
   if (!CONFIG.TELEGRAM_BOT_TOKEN && !CONFIG.GMAIL_USER) {
     console.error("❌ Need TELEGRAM_BOT_TOKEN or GMAIL_USER"); process.exit(1);
   }
 }
+
+// ── Job search signal source (added separately from SIGNAL_SOURCES) ─────────
+const JOB_SOURCES = JOB_PROFILE.queries.map((q, i) => ({
+  id: "jobs_" + i,
+  label: "Job search",
+  emoji: "💼",
+  searchQuery: q,
+  systemPrompt: `YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for Staff or Principal Software Engineer job postings from the LAST 24 HOURS ONLY matching this query. Return up to 3 jobs, all fields under 100 chars:
+[{"source":"LinkedIn","time":"3 hours ago","headline":"Staff SWE @ Google — Remote","quote":"Distributed systems, 400k+, H1B sponsorship, posted today","url":"https://linkedin.com/jobs/...","signalType":"job","company":"Google","role":"Staff Software Engineer","location":"Remote","comp":"$400k-$500k","sponsorship":true,"posted":"today"}]
+CRITICAL: Only include jobs posted in the last 24 hours. If no recent jobs found return: []`
+}));
 
 // ── Supply chain dependency map ────────────────────────────────────────────
 // When a parent fires a signal, these dependents get flagged too
@@ -1152,6 +1185,178 @@ function buildSmartMoneyContext(item) {
   return lines.join(" ");
 }
 
+// ── Job fit scorer ────────────────────────────────────────────────────────
+function scoreJobFit(job) {
+  let score = 0;
+  const text = [job.headline, job.quote, job.role, job.company].join(" ").toLowerCase();
+
+  // Level match
+  if (JOB_PROFILE.targetLevels.some(l => text.includes(l.toLowerCase()))) score += 30;
+
+  // Location match
+  if (JOB_PROFILE.locations.some(l => text.includes(l.toLowerCase()))) score += 20;
+  if (text.includes("remote")) score += 20;
+
+  // Sponsorship
+  if (job.sponsorship === true || text.includes("sponsor")) score += 25;
+  else score -= 30; // hard penalty for no sponsorship
+
+  // Skills match
+  const skillHits = JOB_PROFILE.skills.filter(s => text.includes(s.toLowerCase())).length;
+  score += Math.min(skillHits * 5, 20);
+
+  // Domain match
+  if (JOB_PROFILE.domains.some(d => text.includes(d.toLowerCase()))) score += 10;
+
+  // Comp match (if mentioned)
+  if (text.includes("400") || text.includes("450") || text.includes("500")) score += 15;
+
+  // Tier-1 companies get bonus
+  const tier1 = ["google","meta","apple","amazon","microsoft","netflix","uber","stripe","openai","anthropic","nvidia","databricks","airbnb","linkedin","salesforce"];
+  if (tier1.some(c => text.includes(c))) score += 10;
+
+  return Math.min(Math.max(score, 0), 100);
+}
+
+async function fetchJobListings() {
+  const seenJobs = new Set();
+  const allJobs = [];
+
+  for (const source of JOB_SOURCES) {
+    try {
+      const response = await withRetry(() => getClient().messages.create({
+        model:"claude-haiku-4-5", max_tokens:700,
+        tools:[{ type:"web_search_20250305", name:"web_search" }],
+        system:[{ type:"text", cache_control:{ type:"ephemeral" },
+          text: source.systemPrompt }],
+        messages:[{ role:"user", content: source.searchQuery + " posted last 24 hours today" }],
+      }));
+      trackCacheUsage(response);
+      const text = response.content.find(c=>c.type==="text")?.text || "";
+      const preClean = text.replace(/```json/gi,"").replace(/```/g,"")
+        .replace(/<[^>]+>/g,"").replace(/^[^\[{]*/,"").trim();
+      const match = (preClean||text).match(/\[[\s\S]*\]/);
+      if (!match) continue;
+      const jobs = JSON.parse(match[0]);
+      if (!Array.isArray(jobs)) continue;
+
+      for (const job of jobs) {
+        const key = (job.company||"")+(job.role||"")+(job.location||"");
+        if (seenJobs.has(key)) continue;
+        seenJobs.add(key);
+        job.fitScore = scoreJobFit(job);
+        if (job.fitScore >= 50) allJobs.push(sanitizeItem(job));
+      }
+    } catch(e) {
+      console.log("  ❌ Job search failed:", e.message);
+    }
+    await sleep(8000); // gap between job searches
+  }
+
+  return allJobs.sort((a,b) => b.fitScore - a.fitScore);
+}
+
+async function sendJobAlerts(jobs) {
+  if (!jobs.length) return;
+
+  // ── Telegram ──────────────────────────────────────────────────────────
+  if (CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_IDS.length) {
+    const lines = [
+      `💼 *JOB ALERTS — ${new Date().toLocaleDateString()}*`,
+      `_${jobs.length} new matches in last 24hrs · Staff+ · Seattle/Remote · H1B_`,
+      ``,
+    ];
+
+    for (const job of jobs.slice(0, 5)) {
+      lines.push(`*${job.company||"Company"}* — ${job.role||job.headline}`);
+      lines.push(`📍 ${job.location||"?"} · 💰 ${job.comp||"Comp not listed"} · 🎯 Fit: ${job.fitScore}%`);
+      if (job.sponsorship) lines.push(`✅ H1B sponsorship confirmed`);
+      lines.push(`📝 ${(job.quote||"").slice(0,100)}`);
+      if (job.url && job.url.startsWith("http")) lines.push(`🔗 [Apply](${job.url})`);
+      lines.push(``);
+    }
+
+    const msg = lines.join("\n");
+    for (const chatId of CONFIG.TELEGRAM_CHAT_IDS) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({ chat_id:chatId, text:msg, parse_mode:"Markdown", disable_web_page_preview:false }),
+        });
+        const data = await res.json();
+        if (data.ok) console.log(`💼 Job alert → Telegram ${chatId} ✅`);
+        else {
+          await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({ chat_id:chatId, text:msg.replace(/[*_`\[\]]/g,""), disable_web_page_preview:true }),
+          });
+        }
+      } catch(e) { console.error("Telegram job alert failed:", e.message); }
+    }
+  }
+
+  // ── Gmail ─────────────────────────────────────────────────────────────
+  if (CONFIG.GMAIL_USER && CONFIG.GMAIL_APP_PASSWORD) {
+    const rows = jobs.slice(0,8).map(job => `
+      <tr style="border-bottom:1px solid #1a1a2a;">
+        <td style="padding:12px 8px;">
+          <strong style="color:#f5e6b0;font-size:14px;">${job.company||"?"}</strong>
+          <div style="color:#ccc;font-size:13px;margin-top:2px;">${job.role||job.headline}</div>
+          <div style="color:#556;font-size:11px;margin-top:4px;">${job.location||"?"} · Posted: ${job.time||"recent"}</div>
+        </td>
+        <td style="padding:12px 8px;text-align:center;">
+          <span style="background:rgba(0,208,132,0.15);color:#00d084;padding:3px 8px;border-radius:4px;font-size:12px;">${job.comp||"?"}</span>
+        </td>
+        <td style="padding:12px 8px;text-align:center;">
+          ${job.sponsorship ? '<span style="color:#00d084;font-size:12px;">✅ H1B</span>' : '<span style="color:#556;font-size:12px;">❓</span>'}
+        </td>
+        <td style="padding:12px 8px;text-align:center;">
+          <span style="background:rgba(200,150,10,0.15);color:#c8960a;padding:3px 8px;border-radius:4px;font-size:12px;">${job.fitScore}% fit</span>
+        </td>
+        <td style="padding:12px 8px;text-align:center;">
+          ${job.url&&job.url.startsWith("http") ? `<a href="${job.url}" style="color:#9b5de5;font-size:12px;text-decoration:none;">Apply →</a>` : "—"}
+        </td>
+      </tr>`).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#07080f;font-family:Georgia,serif;color:#dde;">
+<div style="max-width:700px;margin:0 auto;padding:20px 16px;">
+  <div style="background:linear-gradient(135deg,#0a0a18,#001209);border:1px solid #2a2a3a;border-radius:12px;padding:18px;margin-bottom:16px;text-align:center;">
+    <div style="font-size:28px;">💼</div>
+    <div style="font-size:17px;font-weight:700;color:#f5e6b0;">JOB ALERTS — HARSH KUMAR</div>
+    <div style="font-size:10px;color:#556;letter-spacing:2px;">STAFF+ · SEATTLE/REMOTE · H1B · $400K+ · LAST 24HRS</div>
+  </div>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid #2a2a3a;border-radius:10px;padding:4px;margin-bottom:16px;overflow:auto;">
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr style="border-bottom:1px solid #2a2a3a;">
+          <th style="padding:10px 8px;text-align:left;font-size:11px;color:#556;text-transform:uppercase;">Company / Role</th>
+          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Comp</th>
+          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Visa</th>
+          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Fit</th>
+          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Link</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+  <div style="font-size:11px;color:#554433;padding:10px 14px;background:rgba(255,165,2,0.05);border-radius:6px;">
+    💡 Only jobs posted in the last 24 hours. Fit score based on level, location, skills, sponsorship, and comp match. Always verify sponsorship directly with employer before applying.
+  </div>
+</div></body></html>`;
+
+    const nodemailer = require("nodemailer");
+    const transporter = nodemailer.createTransport({service:"gmail", auth:{user:CONFIG.GMAIL_USER, pass:CONFIG.GMAIL_APP_PASSWORD}});
+    await transporter.sendMail({
+      from: `"Job Alerts" <${CONFIG.GMAIL_USER}>`,
+      to:   CONFIG.ALERT_EMAIL,
+      subject: `💼 ${jobs.length} Job Match${jobs.length>1?"es":""} — Staff+ Seattle/Remote H1B — ${new Date().toLocaleDateString()}`,
+      html,
+    });
+    console.log(`💼 Job alert email → ${CONFIG.ALERT_EMAIL} ✅`);
+  }
+}
+
 // ── AI Pre-screener ───────────────────────────────────────────────────────
 // Replaces keyword gating. Haiku reads the statement and returns a structured
 // assessment — catches things keywords never could (Dell example, negations,
@@ -1462,9 +1667,14 @@ async function main() {
   console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
   SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
   console.log(`🎯 Convergence engine: tracks when Congress + insider + hedge fund align on same ticker`);
+  console.log(`💼 Job search: Staff+ Seattle/Remote H1B $400k+ — runs every 6hrs across ${JOB_SOURCES.length} queries`);
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   startHealthServer();
+
+  // ── Job search poll interval (every 6 hours — jobs don't change by the minute) ──
+  let lastJobPoll = 0;
+  const JOB_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
   // Use a setTimeout chain instead of setInterval — guarantees the next poll
   // only starts AFTER the current one fully completes, preventing overlap.
@@ -1473,6 +1683,23 @@ async function main() {
     const pollStart = Date.now();
     await poll();
     const pollDurationMs = Date.now() - pollStart;
+
+    // Job search runs every 6 hours independently of market poll interval
+    if (Date.now() - lastJobPoll > JOB_POLL_INTERVAL_MS) {
+      console.log("\n💼 Running job search...");
+      try {
+        const jobs = await fetchJobListings();
+        console.log("  💼 Found " + jobs.length + " matching job(s)");
+        if (jobs.length > 0) await sendJobAlerts(jobs);
+        else console.log("  💼 No new jobs matching profile in last 24hrs");
+        lastJobPoll = Date.now();
+      } catch(e) {
+        console.error("  ❌ Job search error:", e.message);
+      }
+    } else {
+      const nextJobMins = Math.round((JOB_POLL_INTERVAL_MS - (Date.now()-lastJobPoll)) / 60000);
+      console.log("  💼 Next job search in " + nextJobMins + "min");
+    }
     const intervalMs     = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
 
     // Wait the configured interval AFTER poll finishes.
