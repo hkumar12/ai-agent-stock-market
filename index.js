@@ -78,10 +78,20 @@ const JOB_SOURCES = JOB_PROFILE.queries.map((q, i) => ({
   emoji: "💼",
   searchQuery: q,
   systemPrompt: `YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
-Search for Staff or Principal Software Engineer job postings from the LAST 24 HOURS ONLY matching this query. Return up to 3 jobs, all fields under 100 chars:
-[{"source":"LinkedIn","time":"3 hours ago","headline":"Staff SWE @ Google — Remote","quote":"Distributed systems, 400k+, H1B sponsorship, posted today","url":"https://linkedin.com/jobs/...","signalType":"job","company":"Google","role":"Staff Software Engineer","location":"Remote","comp":"$400k-$500k","sponsorship":true,"posted":"today"}]
-CRITICAL: Only include jobs posted in the last 24 hours. If no recent jobs found return: []`
+Search for Staff or Principal Software Engineer job postings matching this query. Prefer recent postings. Return up to 4 jobs, all fields under 120 chars:
+[{"source":"LinkedIn","time":"today","headline":"Staff SWE @ Google — Remote","quote":"Distributed systems, 400k+, H1B sponsorship","url":"https://linkedin.com/jobs/view/1234567","signalType":"job","company":"Google","role":"Staff Software Engineer","location":"Remote","comp":"$400k-$500k","sponsorship":true,"posted":"today"}]
+Rules: Include real job URLs when found. Set sponsorship:true only if explicitly mentioned. Return [] if truly nothing found.`
 }));
+
+// ── Direct LinkedIn job URL fetcher ───────────────────────────────────────
+// Fetches actual LinkedIn search pages for more reliable results
+const LINKEDIN_JOB_URLS = [
+  "https://www.linkedin.com/jobs/search/?keywords=Staff%20Software%20Engineer%20distributed%20systems&location=Seattle%2C%20WA&f_TPR=r86400&f_E=5%2C6",
+  "https://www.linkedin.com/jobs/search/?keywords=Principal%20Engineer%20backend%20platform&location=Seattle%2C%20WA&f_TPR=r86400&f_E=5%2C6",
+  "https://www.linkedin.com/jobs/search/?keywords=Staff%20Software%20Engineer%20remote%20H1B%20sponsorship&f_TPR=r86400&f_E=5%2C6",
+  "https://www.linkedin.com/jobs/search/?keywords=Staff%20Engineer%20ad%20tech%20advertising%20platform&f_TPR=r86400",
+  "https://www.linkedin.com/jobs/search/?keywords=Principal%20Software%20Engineer%20AWS%20DynamoDB%20remote&f_TPR=r86400",
+];
 
 // ── Supply chain dependency map ────────────────────────────────────────────
 // When a parent fires a signal, these dependents get flagged too
@@ -287,6 +297,16 @@ const LAYERS = {
       { ticker:"IREN", why:"Iris Energy — Australian miner building high-performance AI compute clusters" },
     ],
   },
+  quantum: {
+    label:"Quantum computing", emoji:"⚛️",
+    tickers:["IONQ","IBM","GOOGL","RGTI","QBTS","IFNQ","QUBT"],
+    etf:"QTUM", peers:["IONQ","IBM","GOOGL"],
+    hiddenGems:[
+      { ticker:"RGTI",  why:"Rigetti — cheapest pure-play, high risk/reward" },
+      { ticker:"QUBT",  why:"Quantum Computing Inc — tiny float, explosive on news" },
+      { ticker:"GFS",   why:"GlobalFoundries — $375M quantum fab investment" },
+    ],
+  },
   nuclear: {
     label:"Nuclear & uranium", emoji:"☢️", etf:"NLR",
     tickers:   ["CEG","CCJ","UEC","UUUU","NNE"],
@@ -297,6 +317,28 @@ const LAYERS = {
       { ticker:"NNE",  why:"Nano Nuclear Energy — micro nuclear reactor designer, early stage, Microsoft/Google PPA tailwind" },
       { ticker:"OKLO", why:"Oklo — Sam Altman-backed micro nuclear, OpenAI data center power deal rumors, high risk/reward" },
       { ticker:"BWXT", why:"BWX Technologies — makes nuclear components for US Navy and commercial reactors, steady compounder" },
+    ],
+  },
+  emerging: {
+    label:"Emerging tech catch-all", emoji:"🚀", etf:"ARKK",
+    tickers:["ARKG","ARKQ","ARKW","PRNT","IZRL"],
+    peers:["ARKG","ARKQ","ARKW"],
+    hiddenGems:[
+      { ticker:"ARKG", why:"ARK Genomics — biotech/gene editing catch-all ETF" },
+      { ticker:"ARKQ", why:"ARK Autonomous — robotics/AI/space catch-all ETF" },
+    ],
+  },
+  quantum: {
+    label:"Quantum computing", emoji:"⚛️", etf:"QTUM",
+    tickers:   ["IONQ","IBM","GOOGL","RGTI","QBTS","IFNQ","QUBT"],
+    peers:     ["IONQ","IBM","RGTI"],
+    hiddenGems:[
+      { ticker:"IONQ", why:"IonQ — pure-play quantum networking, EO directly benefits, still early innings" },
+      { ticker:"RGTI", why:"Rigetti Computing — cheapest pure-play after selloff, high risk/reward on 2028 timeline" },
+      { ticker:"QBTS", why:"D-Wave Quantum — optimization focus, government contracts, more upside post-EO" },
+      { ticker:"IFNQ", why:"Infleqtion — quantum sensing/atomic clocks, NASA contracts, direct EO beneficiary" },
+      { ticker:"QUBT", why:"Quantum Computing Inc — tiny cap, explosive on any quantum news, micro-cap play" },
+      { ticker:"GFS",  why:"GlobalFoundries — $375M CHIPS Act quantum fab, manufacturing play" },
     ],
   },
   macro: {
@@ -313,6 +355,7 @@ const LAYERS = {
 
 const SIGNAL_KW = {
   bullish: {
+    quantum:       ["quantum computing","quantum computer","quantum cryptography","post-quantum","quantum sensing","quantum network","qubit","infleqtion","ionq","rigetti","d-wave","quantum executive order","quantum chips"],
     power:         ["power purchase","data center power","electricity demand","nuclear","clean energy deal","grid expansion","gigawatt","energy contract"],
     water:         ["data center cooling","liquid cooling","thermal management","cooling infrastructure","vertiv"],
     datacenter:    ["data center","colocation","hyperscale lease","new campus","capacity expansion","new facility"],
@@ -328,6 +371,7 @@ const SIGNAL_KW = {
     macro:         ["rate cut","fed pivot","dovish","strong jobs","soft landing","inflation cooling","gdp beat"],
   },
   bearish: {
+    quantum:       ["quantum delay","quantum setback","quantum ban","quantum restriction","quantum bubble"],
     chips:         ["chip export ban","semiconductor restriction","export control","china chip ban","chip tariff","misses estimates","lowered guidance"],
     cloud:         ["cloud spending cut","cloud churn","cloud outage","misses","lowered"],
     aimodels:      ["ai regulation","ai ban","ai moratorium","ai safety law"],
@@ -536,7 +580,7 @@ function findSupplyChainRipple(signals) {
 const SIGNAL_SOURCES = [
   {
     id:"trump", label:"Trump statements", emoji:"🦅",
-    searchQuery:"Donald Trump latest statements today Truth Social Twitter 2025",
+    searchQuery:"Donald Trump speech executive order signing White House announcement today 2026",
     systemPrompt:`Respond with ONLY a raw JSON array starting with [ and ending with ]. No headings, no markdown, no explanation. Search for Donald Trump latest statements today and return up to 4 items:
 [{"source":"Truth Social","time":"1 hour ago","headline":"summary","quote":"quote max 150 chars","url":"","signalType":"trump"}]
 If nothing found return: []`
@@ -624,6 +668,22 @@ Empty result: []`
 Search web for latest Buffett Berkshire Ackman Burry Druckenmiller ARK Invest stock moves 2025.
 Return JSON array only:
 [{"source":"13F Filing","time":"2 days ago","headline":"Buffett adds Apple","quote":"detail max 100 chars","url":"","signalType":"smartmoney","ticker":"AAPL","investor":"Warren Buffett","fund":"Berkshire","action":"added","value":"$2B"}]
+Empty result: []`
+  },
+  {
+    id:"whitehouse", label:"White House & executive orders", emoji:"🏛️",
+    searchQuery:"Trump executive order signed White House announcement policy today 2026",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for ANY Trump executive order, White House announcement, or major policy signing today. Catch EVERYTHING — not just known sectors. Return max 4 items:
+[{"source":"White House","time":"today","headline":"Trump signs quantum computing EO","quote":"detail max 80 chars","url":"","signalType":"policy","topic":"quantum computing","companies_mentioned":"IBM, Google, Infleqtion","sentiment":"bullish"}]
+Empty result: []`
+  },
+  {
+    id:"quantum", label:"Quantum computing news", emoji:"⚛️",
+    searchQuery:"quantum computing news executive order investment IBM Google Infleqtion IonQ Rigetti 2026",
+    systemPrompt:`YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Search for latest quantum computing news, executive orders, government investments, or company announcements today. Return max 3 items, quotes under 80 chars:
+[{"source":"Reuters","time":"today","headline":"Trump signs quantum EO with IBM Google","quote":"detail max 80 chars","url":"","signalType":"quantum","ticker":"IONQ","sentiment":"bullish"}]
 Empty result: []`
   },
   {
@@ -906,6 +966,9 @@ Hidden gem framework (use these when relevant signals fire):
 - Defense signal: KTOS (drone AI small cap), RCAT (military drones tiny float), CACI (gov analytics steady), AJRD (propulsion sole-source)
 - Cloud/AI signal: INOD (AI data services 51% revenue growth), CFLT (streaming pipeline), ESTC (vector search), FIVN (contact center AI single-digit PE)
 - Crypto signal: CLSK (CleanSpark pivoting to AI data centers), IREN (Iris Energy compute), HUT (Hut 8 US expansion)
+- If quantum signal: RGTI (Rigetti cheap pure-play), QUBT (tiny cap explosive), IFNQ (sensing/navigation), GFS (fab manufacturing)
+- If space signal: RKLB (Rocket Lab), ASTS (AST SpaceMobile), LUNR (Intuitive Machines)
+- If unknown new sector: research mentally, find 2-3 overlooked small cap pure plays
 
 Give specific, actionable analysis. Name exact tickers, price targets, % upside. Be concrete.`,
         cache_control:{ type:"ephemeral" },  // cache analyst persona — same every call
@@ -1199,7 +1262,7 @@ function scoreJobFit(job) {
 
   // Sponsorship
   if (job.sponsorship === true || text.includes("sponsor")) score += 25;
-  else score -= 30; // hard penalty for no sponsorship
+  // No hard penalty — sponsorship often not listed in snippet even when offered
 
   // Skills match
   const skillHits = JOB_PROFILE.skills.filter(s => text.includes(s.toLowerCase())).length;
@@ -1229,7 +1292,7 @@ async function fetchJobListings() {
         tools:[{ type:"web_search_20250305", name:"web_search" }],
         system:[{ type:"text", cache_control:{ type:"ephemeral" },
           text: source.systemPrompt }],
-        messages:[{ role:"user", content: source.searchQuery + " posted last 24 hours today" }],
+        messages:[{ role:"user", content: "Find current job openings: " + source.searchQuery + ". Include job title, company, location, salary if listed, and apply URL." }],
       }));
       trackCacheUsage(response);
       const text = response.content.find(c=>c.type==="text")?.text || "";
@@ -1245,7 +1308,7 @@ async function fetchJobListings() {
         if (seenJobs.has(key)) continue;
         seenJobs.add(key);
         job.fitScore = scoreJobFit(job);
-        if (job.fitScore >= 50) allJobs.push(sanitizeItem(job));
+        if (job.fitScore >= 30) allJobs.push(sanitizeItem(job));  // lower threshold, filter in alert
       }
     } catch(e) {
       console.log("  ❌ Job search failed:", e.message);
@@ -1270,9 +1333,13 @@ async function sendJobAlerts(jobs) {
     for (const job of jobs.slice(0, 5)) {
       lines.push(`*${job.company||"Company"}* — ${job.role||job.headline}`);
       lines.push(`📍 ${job.location||"?"} · 💰 ${job.comp||"Comp not listed"} · 🎯 Fit: ${job.fitScore}%`);
-      if (job.sponsorship) lines.push(`✅ H1B sponsorship confirmed`);
+      if (job.sponsorship === true) lines.push(`✅ H1B sponsorship confirmed`);
+      else lines.push(`⚠️ Sponsorship: verify directly`);
       lines.push(`📝 ${(job.quote||"").slice(0,100)}`);
-      if (job.url && job.url.startsWith("http")) lines.push(`🔗 [Apply](${job.url})`);
+      const applyUrl = (job.url && job.url.startsWith("http"))
+        ? job.url
+        : `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff Software Engineer")+" "+(job.company||""))}&location=Seattle%2C+WA&f_TPR=r86400`;
+      lines.push(`🔗 [Apply / Search](${applyUrl})`);
       lines.push(``);
     }
 
@@ -1314,7 +1381,7 @@ async function sendJobAlerts(jobs) {
           <span style="background:rgba(200,150,10,0.15);color:#c8960a;padding:3px 8px;border-radius:4px;font-size:12px;">${job.fitScore}% fit</span>
         </td>
         <td style="padding:12px 8px;text-align:center;">
-          ${job.url&&job.url.startsWith("http") ? `<a href="${job.url}" style="color:#9b5de5;font-size:12px;text-decoration:none;">Apply →</a>` : "—"}
+          <a href="${(job.url&&job.url.startsWith("http"))?job.url:`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff SWE")+" "+(job.company||""))}&location=Seattle%2C+WA`}" style="color:#9b5de5;font-size:12px;text-decoration:none;">Apply →</a>
         </td>
       </tr>`).join("");
 
@@ -1406,6 +1473,9 @@ CRITICAL rules:
   Defense signal → hidden gems: KTOS (drone AI), RCAT (military drones), CACI (gov AI analytics)
 - ripple_tickers: 2nd/3rd order companies affected (suppliers, customers, competitors)
 - Always prioritise hidden gems — they have more upside than obvious picks
+- CRITICAL: If the news mentions a sector NOT in the known list (quantum, biotech, space, robotics, autonomous vehicles, energy storage, rare earth, water tech, agricultural tech) — still include it in sectors and surface relevant tickers. Never ignore a signal just because it doesn't fit a known category.
+- For executive orders or government policy: always rate confidence 75+ if it directly names companies or allocates funding
+- For any Oval Office signing with tech CEOs present: confidence 85+ minimum — these are pre-arranged market-moving events
 
 SMART MONEY SOURCE RULES:
 - congress trade: confidence boost +15 if large purchase (>$250k), flag if committee assignment relates to sector
@@ -1553,17 +1623,11 @@ async function poll() {
       console.log(`     "${key.slice(0,45)}…"`);
       console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
 
-      // ── Step 2: AI pre-screen — skip if keyword score is 0 AND source is
-      // low-priority (reddit/options) to avoid wasting tokens on pure noise
-      const lowPriority = ["reddit"].includes(item.signalType||"");
-      const skipScreen  = keywordScored.confidence === 0 && lowPriority;
-      let aiScreen = null;
-      if (!skipScreen) {
-        console.log(`     🧠 AI pre-screening...`);
-        aiScreen = await aiPreScreen(item);
-      } else {
-        console.log(`     ⏭️  Skipping AI pre-screen (low priority + no keywords)`);
-      }
+      // ── Step 2: AI pre-screen — ALWAYS runs, catches unknown signals
+      // Keywords miss things like quantum EO, Dell endorsement, new sectors.
+      // Haiku costs ~$0.001 per item — worth it to never miss a signal.
+      console.log(`     🧠 AI pre-screening...`);
+      const aiScreen = await aiPreScreen(item);
       const scored   = mergeScores(keywordScored, aiScreen);
 
       if (aiScreen) {
@@ -1572,10 +1636,17 @@ async function poll() {
         console.log(`     → FINAL confidence: ${scored.confidence}% (AI ${aiScreen.confidence}% + boost ${scored.breakdown.signalTypeBoost}pts)`);
       }
 
-      if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
+      // Trust AI over keywords when they disagree
+      // If keywords scored 0 but AI sees a signal — AI wins (quantum EO case)
+      const aiOverride = aiScreen && aiScreen.confidence >= 65 && keywordScored.confidence < 20;
+      if (aiOverride) {
+        console.log(`     🔔 AI OVERRIDE — keywords missed this but AI confidence ${aiScreen.confidence}% — escalating`);
+      }
+
+      if (!aiOverride && scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
         console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
       }
-      if (aiScreen?.is_market_moving === false) {
+      if (aiScreen?.is_market_moving === false && !aiOverride) {
         console.log(`     ↩  AI says not market-moving, skipping`); continue;
       }
       if (aiScreen?.negated) {
