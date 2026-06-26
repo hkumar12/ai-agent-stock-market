@@ -1282,508 +1282,65 @@ function scoreJobFit(job) {
 }
 
 async function fetchJobListings() {
-  const seenJobs = new Set();
-  const allJobs = [];
+  console.log("  💼 Running smart job search via Sonnet + web search...");
 
-  for (const source of JOB_SOURCES) {
-    try {
-      const response = await withRetry(() => getClient().messages.create({
-        model:"claude-haiku-4-5", max_tokens:700,
-        tools:[{ type:"web_search_20250305", name:"web_search" }],
-        system:[{ type:"text", cache_control:{ type:"ephemeral" },
-          text: source.systemPrompt }],
-        messages:[{ role:"user", content: "Find current job openings: " + source.searchQuery + ". Include job title, company, location, salary if listed, and apply URL." }],
-      }));
-      trackCacheUsage(response);
-      const text = response.content.find(c=>c.type==="text")?.text || "";
-      const preClean = text.replace(/```json/gi,"").replace(/```/g,"")
-        .replace(/<[^>]+>/g,"").replace(/^[^\[{]*/,"").trim();
-      const match = (preClean||text).match(/\[[\s\S]*\]/);
-      if (!match) continue;
-      const jobs = JSON.parse(match[0]);
-      if (!Array.isArray(jobs)) continue;
-
-      for (const job of jobs) {
-        const key = (job.company||"")+(job.role||"")+(job.location||"");
-        if (seenJobs.has(key)) continue;
-        seenJobs.add(key);
-        job.fitScore = scoreJobFit(job);
-        if (job.fitScore >= 30) allJobs.push(sanitizeItem(job));  // lower threshold, filter in alert
-      }
-    } catch(e) {
-      console.log("  ❌ Job search failed:", e.message);
-    }
-    await sleep(8000); // gap between job searches
-  }
-
-  return allJobs.sort((a,b) => b.fitScore - a.fitScore);
-}
-
-async function sendJobAlerts(jobs) {
-  if (!jobs.length) return;
-
-  // ── Telegram ──────────────────────────────────────────────────────────
-  if (CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_IDS.length) {
-    const lines = [
-      `💼 *JOB ALERTS — ${new Date().toLocaleDateString()}*`,
-      `_${jobs.length} new matches in last 24hrs · Staff+ · Seattle/Remote · H1B_`,
-      ``,
-    ];
-
-    for (const job of jobs.slice(0, 5)) {
-      lines.push(`*${job.company||"Company"}* — ${job.role||job.headline}`);
-      lines.push(`📍 ${job.location||"?"} · 💰 ${job.comp||"Comp not listed"} · 🎯 Fit: ${job.fitScore}%`);
-      if (job.sponsorship === true) lines.push(`✅ H1B sponsorship confirmed`);
-      else lines.push(`⚠️ Sponsorship: verify directly`);
-      lines.push(`📝 ${(job.quote||"").slice(0,100)}`);
-      const applyUrl = (job.url && job.url.startsWith("http"))
-        ? job.url
-        : `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff Software Engineer")+" "+(job.company||""))}&location=Seattle%2C+WA&f_TPR=r86400`;
-      lines.push(`🔗 [Apply / Search](${applyUrl})`);
-      lines.push(``);
-    }
-
-    const msg = lines.join("\n");
-    for (const chatId of CONFIG.TELEGRAM_CHAT_IDS) {
-      try {
-        const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({ chat_id:chatId, text:msg, parse_mode:"Markdown", disable_web_page_preview:false }),
-        });
-        const data = await res.json();
-        if (data.ok) console.log(`💼 Job alert → Telegram ${chatId} ✅`);
-        else {
-          await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({ chat_id:chatId, text:msg.replace(/[*_`\[\]]/g,""), disable_web_page_preview:true }),
-          });
-        }
-      } catch(e) { console.error("Telegram job alert failed:", e.message); }
-    }
-  }
-
-  // ── Gmail ─────────────────────────────────────────────────────────────
-  if (CONFIG.GMAIL_USER && CONFIG.GMAIL_APP_PASSWORD) {
-    const rows = jobs.slice(0,8).map(job => `
-      <tr style="border-bottom:1px solid #1a1a2a;">
-        <td style="padding:12px 8px;">
-          <strong style="color:#f5e6b0;font-size:14px;">${job.company||"?"}</strong>
-          <div style="color:#ccc;font-size:13px;margin-top:2px;">${job.role||job.headline}</div>
-          <div style="color:#556;font-size:11px;margin-top:4px;">${job.location||"?"} · Posted: ${job.time||"recent"}</div>
-        </td>
-        <td style="padding:12px 8px;text-align:center;">
-          <span style="background:rgba(0,208,132,0.15);color:#00d084;padding:3px 8px;border-radius:4px;font-size:12px;">${job.comp||"?"}</span>
-        </td>
-        <td style="padding:12px 8px;text-align:center;">
-          ${job.sponsorship ? '<span style="color:#00d084;font-size:12px;">✅ H1B</span>' : '<span style="color:#556;font-size:12px;">❓</span>'}
-        </td>
-        <td style="padding:12px 8px;text-align:center;">
-          <span style="background:rgba(200,150,10,0.15);color:#c8960a;padding:3px 8px;border-radius:4px;font-size:12px;">${job.fitScore}% fit</span>
-        </td>
-        <td style="padding:12px 8px;text-align:center;">
-          <a href="${(job.url&&job.url.startsWith("http"))?job.url:`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff SWE")+" "+(job.company||""))}&location=Seattle%2C+WA`}" style="color:#9b5de5;font-size:12px;text-decoration:none;">Apply →</a>
-        </td>
-      </tr>`).join("");
-
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#07080f;font-family:Georgia,serif;color:#dde;">
-<div style="max-width:700px;margin:0 auto;padding:20px 16px;">
-  <div style="background:linear-gradient(135deg,#0a0a18,#001209);border:1px solid #2a2a3a;border-radius:12px;padding:18px;margin-bottom:16px;text-align:center;">
-    <div style="font-size:28px;">💼</div>
-    <div style="font-size:17px;font-weight:700;color:#f5e6b0;">JOB ALERTS — HARSH KUMAR</div>
-    <div style="font-size:10px;color:#556;letter-spacing:2px;">STAFF+ · SEATTLE/REMOTE · H1B · $400K+ · LAST 24HRS</div>
-  </div>
-  <div style="background:rgba(255,255,255,0.03);border:1px solid #2a2a3a;border-radius:10px;padding:4px;margin-bottom:16px;overflow:auto;">
-    <table style="width:100%;border-collapse:collapse;">
-      <thead>
-        <tr style="border-bottom:1px solid #2a2a3a;">
-          <th style="padding:10px 8px;text-align:left;font-size:11px;color:#556;text-transform:uppercase;">Company / Role</th>
-          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Comp</th>
-          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Visa</th>
-          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Fit</th>
-          <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase;">Link</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </div>
-  <div style="font-size:11px;color:#554433;padding:10px 14px;background:rgba(255,165,2,0.05);border-radius:6px;">
-    💡 Only jobs posted in the last 24 hours. Fit score based on level, location, skills, sponsorship, and comp match. Always verify sponsorship directly with employer before applying.
-  </div>
-</div></body></html>`;
-
-    const nodemailer = require("nodemailer");
-    const transporter = nodemailer.createTransport({service:"gmail", auth:{user:CONFIG.GMAIL_USER, pass:CONFIG.GMAIL_APP_PASSWORD}});
-    await transporter.sendMail({
-      from: `"Job Alerts" <${CONFIG.GMAIL_USER}>`,
-      to:   CONFIG.ALERT_EMAIL,
-      subject: `💼 ${jobs.length} Job Match${jobs.length>1?"es":""} — Staff+ Seattle/Remote H1B — ${new Date().toLocaleDateString()}`,
-      html,
-    });
-    console.log(`💼 Job alert email → ${CONFIG.ALERT_EMAIL} ✅`);
-  }
-}
-
-// ── AI Pre-screener ───────────────────────────────────────────────────────
-// Replaces keyword gating. Haiku reads the statement and returns a structured
-// assessment — catches things keywords never could (Dell example, negations,
-// unknown companies, implicit sector plays, presidential endorsements etc.)
-async function aiPreScreen(item) {
-  const fullText = [item.headline, item.quote].filter(Boolean).join(" — ");
   try {
     const response = await withRetry(() => getClient().messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 200,  // was 400 — JSON response only needs ~150 tokens
-      system: [{
-        type: "text",
-        cache_control: { type: "ephemeral" },
-        text: `You are a financial signal pre-screener for an aggressive growth investor (1-3 month horizon).
+      model:"claude-sonnet-4-6", max_tokens:1500,
+      tools:[{ type:"web_search_20250305", name:"web_search" }],
+      system:[{
+        type:"text",
+        cache_control:{ type:"ephemeral" },
+        text:`You are a job search assistant for a Staff Software Engineer.
+Resume highlights: 10+ years at Microsoft (Staff SWE), Amazon (SDE2 9yrs), Coupang (Staff SWE).
+Skills: distributed systems, ad-tech, platform engineering, Java, Python, AWS, DynamoDB, Temporal, microservices, event-driven architecture.
+Target: Staff or Principal level. Location: Seattle WA or Remote. Comp: $400k+. Visa: H1B sponsorship required.
 
-Analyse the news item and return ONLY a raw JSON object (no markdown, no preamble):
-{
-  "is_market_moving": true|false,
-  "confidence": 0-100,
-  "sentiment": "bullish"|"bearish"|"neutral",
-  "reasoning": "1 sentence why",
-  "primary_tickers": ["TICK1","TICK2"],
-  "hidden_gem_tickers": ["TICK3","TICK4"],
-  "ripple_tickers": ["TICK5","TICK6"],
-  "sectors": ["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","nuclear","macro"],
-  "signal_type_boost": "earnings"|"presidential_endorsement"|"fda_approval"|"fda_rejection"|"short_squeeze"|"govt_contract"|"job_surge"|"policy"|"analyst_upgrade"|"analyst_downgrade"|"guidance"|"contract"|"regulation"|"none",
-  "negated": true|false
-}
+Search the web for CURRENT open job postings at top tech companies that sponsor H1B visas.
+Search company career pages and job boards like LinkedIn, Greenhouse, Lever.
+Companies known to sponsor H1B: Google, Meta, Amazon, Apple, Microsoft, Netflix, Uber, Stripe, Anthropic, OpenAI, Databricks, Snowflake, Palantir, Nvidia, LinkedIn, Salesforce, Airbnb, DoorDash, MongoDB, Elastic, Datadog, Cloudflare, CrowdStrike, Figma, Scale AI.
 
-Confidence scoring guide:
-- 90-100: Presidential endorsement of specific stock, earnings beat >15%, Fed pivot announcement
-- 75-89:  Earnings beat 5-15%, major contract win, guidance raise, large options sweep
-- 60-74:  Sector news with clear winner, policy change affecting specific companies
-- 40-59:  General industry news, weak signals, ambiguous impact
-- 0-39:   Not market moving, irrelevant, or negated signal
-
-CRITICAL rules:
-- "go out and buy Dell" from a president = 92+ confidence, presidential_endorsement, tickers [DELL,INTC,MSFT]
-- "chip demand not as strong" = negated:true, bearish, lower confidence
-- Unknown company names: look them up mentally and include their ticker
-- primary_tickers: the obvious large-cap plays EVERYONE will think of
-- hidden_gem_tickers: small/mid-cap names most investors MISS that will benefit MORE on % basis
-  Examples: NVDA signal → hidden gems: PLAB (photomasks), AEHR (chip testing), CRDO (connectivity), TSEM (specialty foundry)
-  Data center signal → hidden gems: POWL (switchgear), IESC (electrical contractors), MYRG (grid construction)
-  Nuclear/power signal → hidden gems: UEC (uranium), NNE (micro nuclear), OKLO (Sam Altman's SMR), GEV (turbines)
-  Networking signal → hidden gems: FN (Fabrinet makes the components), SMTC (analog chips), CALX (broadband AI)
-  Defense signal → hidden gems: KTOS (drone AI), RCAT (military drones), CACI (gov AI analytics)
-- ripple_tickers: 2nd/3rd order companies affected (suppliers, customers, competitors)
-- Always prioritise hidden gems — they have more upside than obvious picks
-- CRITICAL: If the news mentions a sector NOT in the known list (quantum, biotech, space, robotics, autonomous vehicles, energy storage, rare earth, water tech, agricultural tech) — still include it in sectors and surface relevant tickers. Never ignore a signal just because it doesn't fit a known category.
-- For executive orders or government policy: always rate confidence 75+ if it directly names companies or allocates funding
-- For any Oval Office signing with tech CEOs present: confidence 85+ minimum — these are pre-arranged market-moving events
-
-SMART MONEY SOURCE RULES:
-- congress trade: confidence boost +15 if large purchase (>$250k), flag if committee assignment relates to sector
-- insider buy (Form 4): confidence boost +20 — this is the STRONGEST signal, execs rarely buy unless bullish
-- hedge fund 13F: confidence boost +10 but note 45-day lag, look for entry on dips post-disclosure
-- Options sweep: confidence boost +12 if large notional value, implies institutional positioning`
+YOUR RESPONSE MUST START WITH [ AND END WITH ]. NO OTHER TEXT.
+Return up to 8 real job postings you find:
+[{"company":"Anthropic","role":"Staff Software Engineer, Infrastructure","location":"Remote","comp":"400k-550k","sponsorship":true,"url":"https://boards.greenhouse.io/anthropic/jobs/123","description":"Build core AI infrastructure at scale","why_fit":"Distributed systems background applies directly","posted":"recent"}]
+If nothing found return: []`
       }],
-      messages: [{ role: "user", content: `Source: ${item.sourceLabel} (${item.signalType||"news"})\nText: ${fullText.slice(0,400)}` }],
+      messages:[{
+        role:"user",
+        content:"Search for current Staff or Principal Software Engineer job postings in Seattle WA or Remote with H1B visa sponsorship at top tech companies. Check career pages and job boards now."
+      }],
     }));
     trackCacheUsage(response);
+
     const text = response.content.find(c=>c.type==="text")?.text || "";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
+    console.log("  💼 Response preview: " + text.slice(0,300));
+
+    const preClean = text
+      .replace(/```json/gi,"").replace(/```/g,"")
+      .replace(/<[^>]+>/g,"").replace(/^[^\[{]*/,"").trim();
+
+    const match = (preClean||text).match(/\[[\s\S]*\]/);
+    if (!match) { console.log("  💼 No JSON array found"); return []; }
+
+    const jobs = JSON.parse(match[0]);
+    if (!Array.isArray(jobs)) return [];
+
+    const seen = new Set();
+    const results = [];
+    for (const job of jobs) {
+      const key = (job.company||"") + (job.role||"");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      job.fitScore = job.fitScore || scoreJobFit(job);
+      if (job.fitScore >= 25) results.push(sanitizeItem(job));
+    }
+
+    console.log("  💼 Found " + results.length + " matching jobs after scoring");
+    return results.sort((a,b) => b.fitScore - a.fitScore);
+
   } catch(e) {
-    console.log(`     ⚠️  AI pre-screen failed: ${e.message} — falling back to keyword score`);
-    return null;
+    console.error("  ❌ Job search error:", e.message);
+    return [];
   }
 }
 
-// Merge AI pre-screen result with keyword scored signals
-// AI score is authoritative for confidence/sentiment/tickers
-// Keyword signals fill in sector details
-function mergeScores(keywordScored, aiScreen) {
-  if (!aiScreen) return keywordScored; // fallback to keyword if AI failed
-
-  // Build signals from AI-identified sectors + keyword details
-  const mergedSignals = { ...keywordScored.signals };
-
-  // Add any sectors AI found that keywords missed
-  (aiScreen.sectors || []).forEach(sector => {
-    if (!mergedSignals[sector]) {
-      mergedSignals[sector] = {
-        direction: aiScreen.sentiment === "bullish" ? "BUY" : "SELL",
-        strength: Math.round(aiScreen.confidence * 0.8),
-        score: aiScreen.sentiment === "bullish" ? 3 : -3,
-        aiDetected: true,   // flag: AI found this, keywords didn't
-      };
-    }
-  });
-
-  // If negated, flip or zero out keyword signals
-  if (aiScreen.negated) {
-    Object.keys(mergedSignals).forEach(s => {
-      mergedSignals[s].direction = mergedSignals[s].direction === "BUY" ? "SELL" : "BUY";
-      mergedSignals[s].negated = true;
-    });
-  }
-
-  // Add AI-found tickers to the ripple map dynamically
-  const dynamicRipples = (aiScreen.ripple_tickers || [])
-    .filter(t => t && t.length <= 5)
-    .map(t => ({ ticker: t, reason: "AI-identified supply chain play", relationship: "related to", parent: (aiScreen.primary_tickers||[])[0] || "signal" }));
-
-  // Signal type boost to confidence
-  const boosts = {
-    presidential_endorsement: 15,
-    fda_approval:   14,  // binary event, very high impact
-    fda_rejection:  14,
-    earnings:       10,
-    guidance:       12,
-    govt_contract:  10,  // direct revenue, often missed
-    short_squeeze:  10,  // catalyst + high short = explosive
-    analyst_upgrade: 9,
-    analyst_downgrade: 9,
-    job_surge:       7,  // leading indicator, 2-3 quarter lead
-    contract:        8,
-    options_flow:    8,
-    policy:          6,
-    regulation:      6,
-    none:            0,
-  };
-  const boost = boosts[aiScreen.signal_type_boost] || 0;
-  const finalConfidence = Math.min(aiScreen.confidence + boost, 95);
-
-  return {
-    signals: mergedSignals,
-    sentiment: aiScreen.sentiment,
-    confidence: finalConfidence,
-    bull: Object.values(mergedSignals).filter(s=>s.direction==="BUY").length,
-    bear: Object.values(mergedSignals).filter(s=>s.direction==="SELL").length,
-    aiScreen,           // attach full AI assessment for logging + alerts
-    dynamicRipples,     // extra ripple tickers AI found
-    breakdown: {
-      ...keywordScored.breakdown,
-      aiConfidence: aiScreen.confidence,
-      signalTypeBoost: boost,
-      negated: aiScreen.negated,
-      aiReasoning: aiScreen.reasoning,
-    },
-  };
-}
-
-// ── Main poll ──────────────────────────────────────────────────────────────
-const seenQuotes = new Set();
-let lastPollTime = null;
-let nextPollTime = null;
-const cacheStats = { hits: 0, writes: 0, tokensSaved: 0 };
-
-// Strip any XML/cite tags and control chars from parsed items
-function sanitizeItem(item) {
-  const strip = s => typeof s === "string"
-    ? s.replace(/<[^>]+>/g,"").replace(/[\x00-\x1F]/g," ").replace(/\s+/g," ").trim()
-    : s;
-  return {
-    ...item,
-    headline: strip(item.headline),
-    quote:    strip(item.quote),
-    source:   strip(item.source),
-    time:     strip(item.time),
-    url:      strip(item.url),
-  };
-}
-
-function trackCacheUsage(response) {
-  if (!response?.usage) return;
-  const hit   = response.usage.cache_read_input_tokens   || 0;
-  const write = response.usage.cache_creation_input_tokens || 0;
-  if (hit)   { cacheStats.hits++;   cacheStats.tokensSaved += hit; }
-  if (write) { cacheStats.writes++; }
-  if (hit || write) {
-    console.log(`     💾 Cache: ${hit ? "HIT "+hit+" tokens saved (90% off)" : ""} ${write ? "WRITE "+write+" tokens" : ""}`);
-  }
-}
-
-async function poll() {
-  console.log(`\n[${new Date().toLocaleTimeString()}] 🔄 Polling ${SIGNAL_SOURCES.length} sources...`);
-
-  for (const source of SIGNAL_SOURCES) {
-    console.log(`  ${source.emoji} Fetching ${source.label}...`);
-    let items = [];
-    try { items = await fetchSourceStatements(source); }
-    catch(err) { console.error(`  ❌ ${source.label} failed:`, err.message); await sleep(25000); continue; }
-    console.log(`  → ${items.length} item(s)`);
-
-    for (const item of items) {
-      const key = (item.quote||item.headline||"").slice(0,50);
-      if (seenQuotes.has(key)) { console.log(`     ↩  Already seen`); continue; }
-      seenQuotes.add(key);
-      if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
-
-      // ── Step 1: fast keyword pre-score (cheap, no API call) ──────────────
-      const keywordScored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
-      const b = keywordScored.breakdown;
-      console.log(`     "${key.slice(0,45)}…"`);
-      console.log(`     → Keyword score: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}% (density=${b.densityPts} cross=${b.crossPts} magnitude=${b.magnitudePts} weight=${b.sourceWeight})`);
-
-      // ── Step 2: AI pre-screen — ALWAYS runs, catches unknown signals
-      // Keywords miss things like quantum EO, Dell endorsement, new sectors.
-      // Haiku costs ~$0.001 per item — worth it to never miss a signal.
-      console.log(`     🧠 AI pre-screening...`);
-      const aiScreen = await aiPreScreen(item);
-      const scored   = mergeScores(keywordScored, aiScreen);
-
-      if (aiScreen) {
-        console.log(`     → AI score: ${aiScreen.sentiment.toUpperCase()} ${aiScreen.confidence}% | ${aiScreen.reasoning}`);
-        console.log(`     → Signal type: ${aiScreen.signal_type_boost} | Negated: ${aiScreen.negated} | Tickers: ${(aiScreen.primary_tickers||[]).join(", ")}`);
-        console.log(`     → FINAL confidence: ${scored.confidence}% (AI ${aiScreen.confidence}% + boost ${scored.breakdown.signalTypeBoost}pts)`);
-      }
-
-      // Trust AI over keywords when they disagree
-      // If keywords scored 0 but AI sees a signal — AI wins (quantum EO case)
-      const aiOverride = aiScreen && aiScreen.confidence >= 65 && keywordScored.confidence < 20;
-      if (aiOverride) {
-        console.log(`     🔔 AI OVERRIDE — keywords missed this but AI confidence ${aiScreen.confidence}% — escalating`);
-      }
-
-      if (!aiOverride && scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
-        console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
-      }
-      if (aiScreen?.is_market_moving === false && !aiOverride) {
-        console.log(`     ↩  AI says not market-moving, skipping`); continue;
-      }
-      if (aiScreen?.negated) {
-        console.log(`     ↩  AI detected negation — signal is ${scored.sentiment}`);
-        // Still continue if bearish signal above threshold
-        if (scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) continue;
-      }
-
-      const topSectors = Object.entries(scored.signals)
-        .sort((a,b)=>Math.abs(b[1].score)-Math.abs(a[1].score)).slice(0,3).map(([s])=>s);
-
-      // Supply chain ripples: hardcoded map + AI-detected dynamic ripples
-      const ripples = [
-        ...findSupplyChainRipple(scored.signals),
-        ...(scored.dynamicRipples||[]),
-      ].filter((r,i,arr) => arr.findIndex(x=>x.ticker===r.ticker)===i).slice(0,8);
-      if (ripples.length) console.log(`     🔗 Ripple plays: ${ripples.map(r=>r.ticker).join(", ")}`);
-
-      // Inject AI-found primary tickers into item for alerts
-      if (aiScreen?.primary_tickers?.length) {
-        item.ticker = item.ticker || aiScreen.primary_tickers[0];
-        item.allTickers = aiScreen.primary_tickers;
-      }
-
-      // Record smart money signals for convergence tracking
-      const smartMoneyTypes = ["congress","insider","smartmoney","options","govcontracts","fda","shortsqueeze"];
-      if (smartMoneyTypes.includes(item.signalType)) {
-        const tickers = [...(aiScreen?.primary_tickers||[]), item.ticker].filter(Boolean);
-        for (const t of tickers) {
-          recordSmartMoneySignal(t, item.signalType, scored.sentiment, item);
-        }
-      }
-
-      // Check convergence for triggered tickers
-      const convergence = item.ticker ? checkConvergence(item.ticker) : null;
-      if (convergence) {
-        console.log(`     🎯 CONVERGENCE: ${convergence.summary}`);
-        scored.confidence = Math.min(scored.confidence + convergence.convergenceBonus, 95);
-        scored.convergence = convergence;
-      }
-
-      // Build smart money context for deep analysis
-      item.smartMoneyContext = buildSmartMoneyContext(item);
-
-      // Fetch context in parallel — skip peer comparison for low-mid confidence to save tokens
-      const highConfidence = scored.confidence >= 80;  // only fetch peers for very high confidence
-      console.log(`     🔍 Fetching context... ${highConfidence ? "(full)" : "(market only — confidence <75%)"}`);
-      const [articleText, marketCtx, peerData] = await Promise.allSettled([
-        fetchArticleText(item.url),
-        fetchMarketContext(topSectors),
-        highConfidence ? fetchPeerComparison(topSectors) : Promise.resolve(null),
-      ]).then(results => results.map(r => r.status==="fulfilled" ? r.value : null));
-
-      console.log(`     🤖 Running deep analysis...`);
-      const analysis = await getDeepAnalysis(item, scored, articleText, marketCtx, peerData, ripples);
-      const conviction = extractConviction(analysis);
-      console.log(`     💡 Conviction: ${conviction??""}/100`);
-
-      await sendAllAlerts(item, scored, analysis, ripples);
-      await sleep(5000);
-    }
-
-    await sleep(25000); // rate limit buffer between sources
-  }
-
-  lastPollTime = new Date().toISOString();
-  console.log(`  💾 Session cache stats: ${cacheStats.hits} hits | ${cacheStats.tokensSaved.toLocaleString()} tokens saved | ${cacheStats.writes} writes`);
-}
-
-function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
-
-function startHealthServer() {
-  const http = require("http");
-  const port = process.env.PORT || 3000;
-  http.createServer((req,res) => {
-    res.writeHead(200,{"Content-Type":"application/json"});
-    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", profile:"aggressive|1-3mo", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, layers:Object.keys(LAYERS).length, lastPoll:lastPollTime, nextPoll:nextPollTime, cacheHits:cacheStats.hits, tokensSaved:cacheStats.tokensSaved, cacheWrites:cacheStats.writes }));
-  }).listen(port, ()=>console.log(`🌐 Health check on port ${port}`));
-}
-
-async function main() {
-  validateConfig();
-  console.log("🤖 AI Ecosystem Signal Engine — Pro Investor Edition");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`👤 Profile: ${INVESTOR_PROFILE.risk} | ${INVESTOR_PROFILE.horizon}`);
-  console.log(`📧 Gmail  → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
-  console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length+" recipient(s)" : "disabled"}`);
-  console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}% | Poll: every ${CONFIG.POLL_INTERVAL_MIN}min`);
-  console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
-  SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
-  console.log(`🎯 Convergence engine: tracks when Congress + insider + hedge fund align on same ticker`);
-  console.log(`💼 Job search: Staff+ Seattle/Remote H1B $400k+ — runs every 6hrs across ${JOB_SOURCES.length} queries`);
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-  startHealthServer();
-
-  // ── Job search poll interval (every 6 hours — jobs don't change by the minute) ──
-  let lastJobPoll = 0;
-  const JOB_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
-
-  // Use a setTimeout chain instead of setInterval — guarantees the next poll
-  // only starts AFTER the current one fully completes, preventing overlap.
-  // With 9 sources x 25s gaps a poll can easily exceed a short interval.
-  async function scheduledPoll() {
-    const pollStart = Date.now();
-    await poll();
-    const pollDurationMs = Date.now() - pollStart;
-
-    // Job search runs every 6 hours independently of market poll interval
-    if (Date.now() - lastJobPoll > JOB_POLL_INTERVAL_MS) {
-      console.log("\n💼 Running job search...");
-      try {
-        const jobs = await fetchJobListings();
-        console.log("  💼 Found " + jobs.length + " matching job(s)");
-        if (jobs.length > 0) await sendJobAlerts(jobs);
-        else console.log("  💼 No new jobs matching profile in last 24hrs");
-        lastJobPoll = Date.now();
-      } catch(e) {
-        console.error("  ❌ Job search error:", e.message);
-      }
-    } else {
-      const nextJobMins = Math.round((JOB_POLL_INTERVAL_MS - (Date.now()-lastJobPoll)) / 60000);
-      console.log("  💼 Next job search in " + nextJobMins + "min");
-    }
-    const intervalMs     = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
-
-    // Wait the configured interval AFTER poll finishes.
-    // If poll itself ran longer, wait at least 30s before next cycle.
-    const waitMs = Math.max(intervalMs - pollDurationMs, 30000);
-    nextPollTime = new Date(Date.now() + waitMs).toISOString();
-
-    const waitMin = Math.round(waitMs / 60000 * 10) / 10;
-    console.log(`\n⏱  Poll took ${Math.round(pollDurationMs/1000)}s. Next poll in ${waitMin}min at ${new Date(nextPollTime).toLocaleTimeString()}`);
-    setTimeout(scheduledPoll, waitMs);
-  }
-
-  scheduledPoll();
-}
-
-main().catch(err => { console.error("\ud83d\udca5 Fatal:", err); process.exit(1); });
