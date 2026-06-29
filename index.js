@@ -753,6 +753,91 @@ function sanitizeItem(item) {
   };
 }
 
+// ── AI Pre-screener ────────────────────────────────────────────────────────
+async function aiPreScreen(item) {
+  const fullText = [item.headline, item.quote].filter(Boolean).join(" — ");
+  try {
+    const response = await withRetry(() => getClient().messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 200,
+      system: [{
+        type: "text",
+        cache_control: { type: "ephemeral" },
+        text: `You are a financial signal pre-screener for an aggressive growth investor (1-3 month horizon).
+Analyse the news item and return ONLY a raw JSON object (no markdown, no preamble):
+{"is_market_moving":true,"confidence":0-100,"sentiment":"bullish|bearish|neutral","reasoning":"1 sentence why","primary_tickers":["TICK1"],"hidden_gem_tickers":["TICK2"],"ripple_tickers":["TICK3"],"sectors":["chips","cloud","energy","defense","crypto","manufacturing","datacenter","power","aimodels","applications","networking","water","nuclear","quantum","macro"],"signal_type_boost":"earnings|presidential_endorsement|fda_approval|fda_rejection|short_squeeze|govt_contract|job_surge|policy|analyst_upgrade|analyst_downgrade|guidance|contract|regulation|none","negated":false}
+Confidence guide: 90-100=presidential EO naming companies or earnings beat>15%; 75-89=earnings beat 5-15% major contract guidance raise; 60-74=sector news clear winner; 40-59=general industry news; 0-39=not market moving.
+CRITICAL: "go out and buy Dell" from president=92+ confidence presidential_endorsement; "not as strong"=negated:true; always include hidden_gem_tickers for less-obvious small cap plays; for EOs naming companies confidence 75+ minimum; for unknown sectors still surface relevant tickers.`
+      }],
+      messages: [{ role: "user", content: `Source: ${item.sourceLabel} (${item.signalType||"news"})\nText: ${fullText.slice(0,400)}` }],
+    }));
+    trackCacheUsage(response);
+    const text = response.content.find(c => c.type === "text")?.text || "";
+    const match = text.replace(/<[^>]+>/g,"").match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch(e) {
+    console.log(`     ⚠️  AI pre-screen failed: ${e.message}`);
+    return null;
+  }
+}
+
+// ── Merge keyword score with AI pre-screen result ──────────────────────────
+function mergeScores(keywordScored, aiScreen) {
+  if (!aiScreen) return keywordScored;
+
+  const mergedSignals = { ...keywordScored.signals };
+
+  (aiScreen.sectors || []).forEach(sector => {
+    if (!mergedSignals[sector]) {
+      mergedSignals[sector] = {
+        direction: aiScreen.sentiment === "bullish" ? "BUY" : "SELL",
+        strength: Math.round(aiScreen.confidence * 0.8),
+        score: aiScreen.sentiment === "bullish" ? 3 : -3,
+        aiDetected: true,
+      };
+    }
+  });
+
+  if (aiScreen.negated) {
+    Object.keys(mergedSignals).forEach(s => {
+      mergedSignals[s].direction = mergedSignals[s].direction === "BUY" ? "SELL" : "BUY";
+      mergedSignals[s].negated = true;
+    });
+  }
+
+  const dynamicRipples = [...(aiScreen.ripple_tickers||[]), ...(aiScreen.hidden_gem_tickers||[])]
+    .filter(t => t && t.length <= 5)
+    .map(t => ({ ticker: t, reason: "AI-identified play", relationship: "related to", parent: (aiScreen.primary_tickers||[])[0] || "signal", isHiddenGem: (aiScreen.hidden_gem_tickers||[]).includes(t) }));
+
+  const boosts = {
+    presidential_endorsement: 15, fda_approval: 14, fda_rejection: 14,
+    earnings: 10, guidance: 12, govt_contract: 10, short_squeeze: 10,
+    analyst_upgrade: 9, analyst_downgrade: 9, job_surge: 7,
+    contract: 8, options_flow: 8, policy: 6, regulation: 6, none: 0,
+  };
+  const boost = boosts[aiScreen.signal_type_boost] || 0;
+  const finalConfidence = Math.min(aiScreen.confidence + boost, 95);
+
+  return {
+    signals: mergedSignals,
+    sentiment: aiScreen.sentiment,
+    confidence: finalConfidence,
+    bull: Object.values(mergedSignals).filter(s=>s.direction==="BUY").length,
+    bear: Object.values(mergedSignals).filter(s=>s.direction==="SELL").length,
+    aiScreen,
+    dynamicRipples,
+    breakdown: {
+      ...(keywordScored.breakdown||{}),
+      aiConfidence: aiScreen.confidence,
+      signalTypeBoost: boost,
+      negated: aiScreen.negated,
+      aiReasoning: aiScreen.reasoning,
+    },
+  };
+}
+
+
 async function fetchSourceStatements(source) {
   const response = await withRetry(() => getClient().messages.create({
     model:"claude-haiku-4-5", max_tokens:700,  // 700 enough for 3-4 JSON items without truncation
