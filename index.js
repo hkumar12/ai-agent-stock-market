@@ -1344,3 +1344,267 @@ If nothing found return: []`
   }
 }
 
+
+async function sendJobAlerts(jobs) {
+  if (!jobs.length) return;
+
+  if (CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_IDS.length) {
+    const lines = [
+      `💼 *JOB ALERTS — ${new Date().toLocaleDateString()}*`,
+      `_${jobs.length} match(es) · Staff+ · Seattle/Remote · H1B · $400k+_`,
+      ``,
+    ];
+    for (const job of jobs.slice(0, 5)) {
+      lines.push(`*${job.company||"?"}* — ${job.role||job.headline||"?"}`);
+      lines.push(`📍 ${job.location||"?"} · 💰 ${job.comp||"Comp TBD"} · 🎯 ${job.fitScore||"?"}% fit`);
+      lines.push(job.sponsorship === true ? `✅ H1B sponsorship confirmed` : `⚠️ Verify sponsorship directly`);
+      if (job.why_fit) lines.push(`💡 ${job.why_fit}`);
+      const applyUrl = (job.url && job.url.startsWith("http"))
+        ? job.url
+        : `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff Software Engineer")+" "+(job.company||""))}&location=Seattle`;
+      lines.push(`🔗 [Apply](${applyUrl})`);
+      lines.push(``);
+    }
+    const msg = lines.join("\n");
+    for (const chatId of CONFIG.TELEGRAM_CHAT_IDS) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({ chat_id:chatId, text:msg, parse_mode:"Markdown", disable_web_page_preview:false }),
+        });
+        const data = await res.json();
+        if (data.ok) console.log(`💼 Job alert Telegram ${chatId} ✅`);
+        else {
+          await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({ chat_id:chatId, text:msg.replace(/[*_`\[\]]/g,""), disable_web_page_preview:true }),
+          });
+        }
+      } catch(e) { console.error("Telegram job alert failed:", e.message); }
+    }
+  }
+
+  if (CONFIG.GMAIL_USER && CONFIG.GMAIL_APP_PASSWORD) {
+    const rows = jobs.slice(0,8).map(job => `
+      <tr style="border-bottom:1px solid #1a1a2a;">
+        <td style="padding:12px 8px;">
+          <strong style="color:#f5e6b0">${job.company||"?"}</strong>
+          <div style="color:#ccc;font-size:13px">${job.role||job.headline||"?"}</div>
+          <div style="color:#556;font-size:11px">${job.location||"?"} · ${job.time||"recent"}</div>
+          ${job.why_fit?`<div style="color:#9b5de5;font-size:11px;margin-top:3px">💡 ${job.why_fit}</div>`:""}
+        </td>
+        <td style="padding:12px 8px;text-align:center">
+          <span style="background:rgba(0,208,132,0.15);color:#00d084;padding:3px 8px;border-radius:4px;font-size:12px">${job.comp||"TBD"}</span>
+        </td>
+        <td style="padding:12px 8px;text-align:center">
+          ${job.sponsorship===true?'<span style="color:#00d084">✅ H1B</span>':'<span style="color:#888">⚠️ verify</span>'}
+        </td>
+        <td style="padding:12px 8px;text-align:center">
+          <span style="background:rgba(200,150,10,0.15);color:#c8960a;padding:3px 8px;border-radius:4px;font-size:12px">${job.fitScore||"?"}%</span>
+        </td>
+        <td style="padding:12px 8px;text-align:center">
+          <a href="${job.url&&job.url.startsWith("http")?job.url:`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent((job.role||"Staff SWE")+" "+(job.company||""))}&location=Seattle`}" style="color:#9b5de5;font-size:12px">Apply →</a>
+        </td>
+      </tr>`).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#07080f;font-family:Georgia,serif;color:#dde">
+<div style="max-width:700px;margin:0 auto;padding:20px 16px">
+  <div style="background:linear-gradient(135deg,#0a0a18,#001209);border:1px solid #2a2a3a;border-radius:12px;padding:18px;margin-bottom:16px;text-align:center">
+    <div style="font-size:28px">💼</div>
+    <div style="font-size:17px;font-weight:700;color:#f5e6b0">JOB ALERTS — HARSH KUMAR</div>
+    <div style="font-size:10px;color:#556;letter-spacing:2px">STAFF+ · SEATTLE/REMOTE · H1B · $400K+</div>
+  </div>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid #2a2a3a;border-radius:10px;padding:4px;margin-bottom:16px;overflow:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:1px solid #2a2a3a">
+        <th style="padding:10px 8px;text-align:left;font-size:11px;color:#556;text-transform:uppercase">Company / Role</th>
+        <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase">Comp</th>
+        <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase">Visa</th>
+        <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase">Fit</th>
+        <th style="padding:10px 8px;text-align:center;font-size:11px;color:#556;text-transform:uppercase">Link</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+  <div style="font-size:11px;color:#554433;padding:10px 14px;background:rgba(255,165,2,0.05);border-radius:6px">
+    💡 Fit score based on level, location, skills, sponsorship, and comp. Always verify sponsorship directly before applying.
+  </div>
+</div></body></html>`;
+
+    const nodemailer = require("nodemailer");
+    const transporter = nodemailer.createTransport({service:"gmail",auth:{user:CONFIG.GMAIL_USER,pass:CONFIG.GMAIL_APP_PASSWORD}});
+    await transporter.sendMail({
+      from:`"Job Alerts" <${CONFIG.GMAIL_USER}>`,
+      to:CONFIG.ALERT_EMAIL,
+      subject:`💼 ${jobs.length} Job Match${jobs.length>1?"es":""} — Staff+ Seattle/Remote H1B — ${new Date().toLocaleDateString()}`,
+      html,
+    });
+    console.log(`💼 Job alert email → ${CONFIG.ALERT_EMAIL} ✅`);
+  }
+}
+
+// ── Main poll loop ─────────────────────────────────────────────────────────
+const seenQuotes = new Set();
+let lastPollTime = null;
+let nextPollTime = null;
+const cacheStats = { hits:0, writes:0, tokensSaved:0 };
+
+function trackCacheUsage(response) {
+  if (!response?.usage) return;
+  const hit   = response.usage.cache_read_input_tokens    || 0;
+  const write = response.usage.cache_creation_input_tokens || 0;
+  if (hit)   { cacheStats.hits++;   cacheStats.tokensSaved += hit; }
+  if (write) { cacheStats.writes++; }
+  if (hit || write) console.log(`     💾 Cache: ${hit?"HIT "+hit+" tokens saved (90% off) ":""}${write?"WRITE "+write+" tokens":""}`);
+}
+
+async function poll() {
+  console.log(`\n[${new Date().toLocaleTimeString()}] 🔄 Polling ${SIGNAL_SOURCES.length} sources...`);
+
+  for (const source of SIGNAL_SOURCES) {
+    console.log(`  ${source.emoji} Fetching ${source.label}...`);
+    let items = [];
+    try { items = await fetchSourceStatements(source); }
+    catch(err) { console.error(`  ❌ ${source.label} failed:`, err.message); await sleep(25000); continue; }
+    console.log(`  → ${items.length} item(s)`);
+
+    for (const item of items) {
+      const key = (item.quote||item.headline||"").slice(0,50);
+      if (seenQuotes.has(key)) { console.log(`     ↩  Already seen`); continue; }
+      seenQuotes.add(key);
+      if (seenQuotes.size > 1000) seenQuotes.delete(seenQuotes.values().next().value);
+
+      const keywordScored = scoreStatement(item.quote||item.headline||"", item.signalType||"news");
+      const b = keywordScored.breakdown||{};
+      console.log(`     "${key.slice(0,45)}…"`);
+      console.log(`     → Keyword: ${keywordScored.sentiment.toUpperCase()} ${keywordScored.confidence}%`);
+
+      console.log(`     🧠 AI pre-screening...`);
+      const aiScreen = await aiPreScreen(item);
+      const scored   = mergeScores(keywordScored, aiScreen);
+
+      if (aiScreen) {
+        console.log(`     → AI: ${aiScreen.sentiment.toUpperCase()} ${aiScreen.confidence}% | ${aiScreen.reasoning}`);
+        console.log(`     → FINAL: ${scored.confidence}% | Tickers: ${(aiScreen.primary_tickers||[]).join(", ")}`);
+      }
+
+      const aiOverride = aiScreen && aiScreen.confidence >= 65 && keywordScored.confidence < 20;
+      if (aiOverride) console.log(`     🔔 AI OVERRIDE — escalating despite low keyword score`);
+
+      if (!aiOverride && scored.confidence < CONFIG.CONFIDENCE_THRESHOLD) {
+        console.log(`     ↩  Below threshold (${CONFIG.CONFIDENCE_THRESHOLD}%)`); continue;
+      }
+      if (aiScreen?.is_market_moving === false && !aiOverride) {
+        console.log(`     ↩  AI says not market-moving`); continue;
+      }
+
+      const topSectors = Object.entries(scored.signals)
+        .sort((a,b)=>Math.abs(b[1].score)-Math.abs(a[1].score)).slice(0,3).map(([s])=>s);
+
+      const ripples = [
+        ...findSupplyChainRipple(scored.signals),
+        ...(scored.dynamicRipples||[]),
+      ].filter((r,i,arr)=>arr.findIndex(x=>x.ticker===r.ticker)===i).slice(0,10);
+      if (ripples.length) console.log(`     🔗 Ripples: ${ripples.map(r=>r.ticker).join(", ")}`);
+
+      if (aiScreen?.primary_tickers?.length) {
+        item.ticker    = item.ticker || aiScreen.primary_tickers[0];
+        item.allTickers = aiScreen.primary_tickers;
+      }
+
+      const smartMoneyTypes = ["congress","insider","smartmoney","options","govcontracts","fda","shortsqueeze"];
+      if (smartMoneyTypes.includes(item.signalType)) {
+        const tickers = [...(aiScreen?.primary_tickers||[]), item.ticker].filter(Boolean);
+        for (const t of tickers) recordSmartMoneySignal(t, item.signalType, scored.sentiment, item);
+      }
+
+      const convergence = item.ticker ? checkConvergence(item.ticker) : null;
+      if (convergence) {
+        console.log(`     🎯 CONVERGENCE: ${convergence.summary}`);
+        scored.confidence = Math.min(scored.confidence + convergence.convergenceBonus, 95);
+        scored.convergence = convergence;
+      }
+
+      item.smartMoneyContext = buildSmartMoneyContext(item);
+
+      const highConfidence = scored.confidence >= 80;
+      console.log(`     🔍 Fetching context... ${highConfidence?"(full)":"(market only)"}`);
+      const [articleText, marketCtx, peerData] = await Promise.allSettled([
+        fetchArticleText(item.url),
+        fetchMarketContext(topSectors),
+        highConfidence ? fetchPeerComparison(topSectors) : Promise.resolve(null),
+      ]).then(results => results.map(r => r.status==="fulfilled" ? r.value : null));
+
+      console.log(`     🤖 Running deep analysis...`);
+      const analysis   = await getDeepAnalysis(item, scored, articleText, marketCtx, peerData, ripples);
+      const conviction = extractConviction(analysis);
+      console.log(`     💡 Conviction: ${conviction??""}/100`);
+
+      await sendAllAlerts(item, scored, analysis, ripples);
+      await sleep(5000);
+    }
+    await sleep(25000);
+  }
+
+  lastPollTime = new Date().toISOString();
+  console.log(`  💾 Cache stats: ${cacheStats.hits} hits | ${cacheStats.tokensSaved.toLocaleString()} tokens saved | ${cacheStats.writes} writes`);
+}
+
+function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+
+function startHealthServer() {
+  const http = require("http");
+  const port = process.env.PORT || 3000;
+  http.createServer((req,res) => {
+    res.writeHead(200,{"Content-Type":"application/json"});
+    res.end(JSON.stringify({ status:"running", service:"AI Signal Engine Pro", uptime:Math.floor(process.uptime())+"s", sources:SIGNAL_SOURCES.length, lastPoll:lastPollTime, nextPoll:nextPollTime, cacheHits:cacheStats.hits, tokensSaved:cacheStats.tokensSaved }));
+  }).listen(port, ()=>console.log(`🌐 Health check on port ${port}`));
+}
+
+async function main() {
+  validateConfig();
+  console.log("🤖 AI Ecosystem Signal Engine — Pro Investor Edition");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`👤 Profile: ${INVESTOR_PROFILE.risk} | ${INVESTOR_PROFILE.horizon}`);
+  console.log(`📧 Gmail   → ${CONFIG.GMAIL_USER ? CONFIG.ALERT_EMAIL : "disabled"}`);
+  console.log(`📲 Telegram → ${CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_CHAT_IDS.length+" recipient(s)" : "disabled"}`);
+  console.log(`🎯 Threshold: ${CONFIG.CONFIDENCE_THRESHOLD}% | Poll: every ${CONFIG.POLL_INTERVAL_MIN}min`);
+  console.log(`📡 Sources: ${SIGNAL_SOURCES.length} total`);
+  SIGNAL_SOURCES.forEach(s => console.log(`   ${s.emoji} ${s.label}`));
+  console.log(`💼 Job search: Staff+ Seattle/Remote H1B $400k+ — every 6hrs`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+  startHealthServer();
+
+  let lastJobPoll = 0;
+  const JOB_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+  async function scheduledPoll() {
+    const pollStart = Date.now();
+    await poll();
+    const pollDurationMs = Date.now() - pollStart;
+
+    if (Date.now() - lastJobPoll > JOB_POLL_INTERVAL_MS) {
+      console.log("\n💼 Running job search...");
+      try {
+        const jobs = await fetchJobListings();
+        console.log("  💼 Found " + jobs.length + " matching job(s)");
+        if (jobs.length > 0) await sendJobAlerts(jobs);
+        else console.log("  💼 No matching jobs found this cycle");
+        lastJobPoll = Date.now();
+      } catch(e) { console.error("  ❌ Job search error:", e.message); }
+    }
+
+    const intervalMs = CONFIG.POLL_INTERVAL_MIN * 60 * 1000;
+    const waitMs     = Math.max(intervalMs - pollDurationMs, 30000);
+    nextPollTime     = new Date(Date.now() + waitMs).toISOString();
+    const waitMin    = Math.round(waitMs / 60000 * 10) / 10;
+    console.log(`\n⏱  Poll took ${Math.round(pollDurationMs/1000)}s. Next in ${waitMin}min at ${new Date(nextPollTime).toLocaleTimeString()}`);
+    setTimeout(scheduledPoll, waitMs);
+  }
+
+  scheduledPoll();
+}
+
+main().catch(err => { console.error("💥 Fatal:", err); process.exit(1); });
